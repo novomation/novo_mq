@@ -1,0 +1,10 @@
+[package]
+name = "rt_datalayer"
+version = "0.1.0"
+edition = "2024"
+authors = ["Marc Fischer <marcfir@proton.me>"]
+description = "Real-time datalyer for IPC"
+keywords = ["ipc", "linux", "rt", "real-time"]
+
+
+[dependencies]
