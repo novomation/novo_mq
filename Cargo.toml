@@ -8,3 +8,12 @@ keywords = ["ipc", "linux", "rt", "real-time"]
 
 
 [dependencies]
+base64 = "0.22.1"
+log = "0.4.29"
+nix = { version = "0.30.1", features = ["socket"] }
+thiserror = "2.0.17"
+uuid = { version = "1.19.0", features = ["v4"] }
+waitfree-sync = "0.3.2"
+
+[dev-dependencies]
+test-log = "0.2.19"
