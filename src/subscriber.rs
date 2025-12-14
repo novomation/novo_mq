@@ -1,3 +1,10 @@
+use crate::{
+    topic::encode,
+    transport::{
+        self, ManagedTransport, ReceiveError, TransportError, TransportManaging, TransportMessaging,
+    },
+};
+use log::{debug, error, info, warn};
 use std::{
     sync::{
         Arc,
@@ -5,47 +12,100 @@ use std::{
     },
     time::Duration,
 };
-
-use waitfree_sync::spsc::spsc;
-
-use crate::{
-    topic::encode,
-    transport::{self, ManagedTransport, TransportError, TransportManaging},
-};
+use waitfree_sync::spsc;
 
 pub struct Subscriber {
     local_stop_flag: Arc<AtomicBool>,
     has_connection: Arc<AtomicBool>,
+    has_error: Arc<AtomicBool>,
+    socket: Option<Box<dyn TransportMessaging + Send>>,
+    rx_new_socket: spsc::Receiver<Box<dyn TransportMessaging + Send>>,
 }
 impl Subscriber {
     pub fn new(topic: impl AsRef<str>) -> Result<Self, TransportError> {
-        let (mut uds, uds_tx) = transport::uds::Uds::new()?.into_managed();
         let local_stop_flag: Arc<AtomicBool> = Arc::new(false.into());
         let has_connection: Arc<AtomicBool> = Arc::new(false.into());
+        let has_error: Arc<AtomicBool> = Arc::new(false.into());
 
         let publ_addr = encode(topic.as_ref());
+
+        let (mut tx_new_socket, rx_new_socket) =
+            spsc::spsc::<Box<dyn TransportMessaging + Send>>(64);
 
         std::thread::spawn({
             let local_stop_flag = local_stop_flag.clone();
             let has_connection = has_connection.clone();
+            let has_error = has_error.clone();
+
+            let topic = topic.as_ref().to_string();
             move || {
+                debug!("Start subscriber `{topic}` mgmt thread");
                 while !local_stop_flag.load(Ordering::Relaxed) {
                     if !has_connection.load(Ordering::Acquire) {
-                        if let Ok(()) = uds.connect(&publ_addr) {
-                            has_connection.store(true, Ordering::Release);
+                        let transport = match transport::uds::Uds::new() {
+                            Ok(transport) => transport,
+                            Err(err) => {
+                                error!("Could not create subscriber socket {err}");
+                                has_error.store(true, Ordering::Relaxed);
+                                return Err(err);
+                            }
+                        };
+                        let (mut uds, uds_tx) = transport.into_managed();
+                        match uds.connect(&publ_addr) {
+                            Ok(_) => {
+                                has_connection.store(true, Ordering::Release);
+                                tx_new_socket.try_send(Box::new(uds_tx)).inspect_err(|err| {
+                                    warn!("Could not save subscriber socket -> Try again")
+                                });
+                                info!("Now connected to {topic}");
+                            }
+                            Err(err) => {
+                                error!("Could not connect {err}");
+                            }
                         }
                     } else {
                         std::thread::sleep(Duration::from_secs(1));
                     }
                 }
+                Ok(())
             }
         });
         Ok(Self {
             local_stop_flag,
             has_connection,
+            has_error,
+            socket: None,
+            rx_new_socket,
         })
     }
-    pub fn try_recv() {}
+    pub fn try_recv(&mut self, message: &mut [u8]) -> Result<usize, ReceiveError> {
+        if self.socket.is_none() {
+            self.socket = self.rx_new_socket.try_recv();
+        }
+        if let Some(socket) = &self.socket {
+            let bytes = socket.recv(message)?;
+            // When a stream socket peer has performed an orderly shutdown, the
+            // return value will be 0 (the traditional "end-of-file" return).
+            //
+            // Datagram sockets in various domains (e.g., the UNIX and Internet
+            // domains) permit zero-size datagrams.  When such a datagram is
+            // received, the return value is 0.
+            //
+            // The value 0 may also be returned if the requested number of bytes
+            // to receive from a stream socket was 0.
+            // Here we hope thaht we only catch the first case. So sending zero must be avoided.
+            if bytes == 0 {
+                self.has_connection.store(false, Ordering::Release);
+                // We drop the existing connection
+                let _ = self.socket.take();
+                Err(ReceiveError::DisconnectDetected)
+            } else {
+                Ok(bytes)
+            }
+        } else {
+            Err(ReceiveError::NotConnectedToPublisher)
+        }
+    }
 }
 impl Drop for Subscriber {
     fn drop(&mut self) {
@@ -55,12 +115,34 @@ impl Drop for Subscriber {
 
 #[cfg(test)]
 mod test {
+    use crate::publisher::Publisher;
+
     use super::*;
     use std::time::Duration;
     use test_log::test;
 
     #[test]
     fn smoke() {
-        let sub = Subscriber::new("peter").unwrap();
+        let mut sub = Subscriber::new("peter").unwrap();
+        let mut publ = Publisher::new("peter").unwrap();
+        publ.wait_for_subscribers(1);
+
+        publ.try_send("hans".as_bytes()).unwrap();
+
+        let mut buf = [0u8; 1000];
+        let len = sub.try_recv(&mut buf).unwrap();
+        println!("{:?}", String::from_utf8_lossy(&buf[0..len]));
+        drop(publ);
+        let mut publ = Publisher::new("peter").unwrap();
+
+        let mut buf = [0u8; 1000];
+        assert_eq!(
+            sub.try_recv(&mut buf),
+            Err(ReceiveError::DisconnectDetected)
+        );
+        publ.wait_for_subscribers(1);
+        publ.try_send("hans".as_bytes()).unwrap();
+        let len = sub.try_recv(&mut buf).unwrap();
+        println!("{:?}", String::from_utf8_lossy(&buf[0..len]));
     }
 }
