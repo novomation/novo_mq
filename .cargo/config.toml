@@ -2,3 +2,4 @@
 root = "--config=.cargo/root-config.toml"
 rrun = "root run"
 rtest = "root test"
+rbench = "root bench"

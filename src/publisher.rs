@@ -19,7 +19,7 @@ use crate::{
 };
 
 pub struct Publisher {
-    connections: Vec<Box<dyn TransportMessaging + Send>>,
+    connections: Vec<(Box<dyn TransportMessaging + Send>, usize)>,
     rx_connection: spsc::Receiver<Box<dyn TransportMessaging + Send>>,
     local_stop_flag: Arc<AtomicBool>,
     number_of_subscribers: Arc<AtomicUsize>,
@@ -50,15 +50,17 @@ impl Publisher {
             let number_of_subscribers = number_of_subscribers.clone();
 
             move || {
-                debug!("Start publisher `{topic}` mgmt thread");
+                debug!("Start publisher `{topic}` mgmt thread and waiting for subscribers");
                 if let Ok(mut c) = condvar.0.lock() {
                     *c = 0;
                 }
                 condvar.1.notify_one();
                 while !local_stop_flag.load(Ordering::Relaxed) {
-                    let res = uds
-                        .accept()
-                        .inspect_err(|err| debug!("Error in accept: {err}"));
+                    let res = uds.accept().inspect_err(|err| match err {
+                        TransportError::OsError(Errno::EAGAIN) => (), // We ignore eagain. It's not an error. It just signals that nothing happend in non blocking mode.
+                        TransportError::OsError(_) => error!("Error in accept: {err}"),
+                        TransportError::IoError(_) => error!("Error in accept: {err}"),
+                    });
                     if let Ok(connection) = res {
                         info!("Got new subscriber for `{topic}`");
                         let _ = tx_connection
@@ -103,6 +105,7 @@ impl Publisher {
         while *num < number_of_subscribers {
             num = cvar.wait(num).unwrap();
         }
+        info!("Waited and now there are at least {number_of_subscribers} subscribers");
     }
     /// This blocks the current thread until `number_of_subscribers` connected to this publisher
     pub fn wait_for_subscribers(&self, number_of_subscribers: usize) {
@@ -112,13 +115,14 @@ impl Publisher {
         while *num != number_of_subscribers {
             num = cvar.wait(num).unwrap();
         }
+        info!("Waited and now there are {number_of_subscribers} subscribers");
     }
     pub fn try_send(&mut self, message: &[u8]) -> Result<(), SendError> {
         if message.is_empty() {
             return Err(SendError::ZeroBytes);
         }
         while let Some(con) = self.rx_connection.try_recv() {
-            self.connections.push(con);
+            self.connections.push((con, 0));
         }
         debug!(
             "Send on {} with {} subscribers",
@@ -126,13 +130,17 @@ impl Publisher {
             self.connections.len()
         );
         let mut connections_to_remove = heapless::Vec::<usize, 20>::new();
-        for (i, con) in self.connections.iter().enumerate() {
+        for (i, (con, lost_msg)) in self.connections.iter_mut().enumerate() {
             match con.send(message) {
                 Ok(_) => (),
+                Err(SendError::OsError(Errno::EAGAIN)) => {
+                    *lost_msg += 1;
+                }
                 Err(SendError::OsError(Errno::ECONNRESET)) => {
                     let _ = connections_to_remove.push(i);
                 }
                 Err(err) => {
+                    error!("conn{i} {err}");
                     return Err(err);
                 }
             }

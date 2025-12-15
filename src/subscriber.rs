@@ -4,7 +4,8 @@ use crate::{
         self, ManagedTransport, ReceiveError, TransportError, TransportManaging, TransportMessaging,
     },
 };
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
+use nix::errno::Errno;
 use std::{
     sync::{
         Arc,
@@ -39,9 +40,14 @@ impl Subscriber {
 
             let topic = topic.as_ref().to_string();
             move || {
-                debug!("Start subscriber `{topic}` mgmt thread");
+                debug!("Start subscriber `{topic}` mgmt thread and try to connect");
+                trace!(
+                    "local_stop_flag={}",
+                    local_stop_flag.load(Ordering::Relaxed)
+                );
                 while !local_stop_flag.load(Ordering::Relaxed) {
                     if !has_connection.load(Ordering::Acquire) {
+                        // info!("Try to connect subscriber to `{topic}`");
                         let transport = match transport::uds::Uds::new() {
                             Ok(transport) => transport,
                             Err(err) => {
@@ -59,6 +65,7 @@ impl Subscriber {
                                 });
                                 info!("Now connected to {topic}");
                             }
+                            Err(TransportError::OsError(Errno::ENOENT)) => (),
                             Err(err) => {
                                 error!("Could not connect {err}");
                             }
@@ -78,12 +85,13 @@ impl Subscriber {
             rx_new_socket,
         })
     }
-    pub fn try_recv(&mut self, message: &mut [u8]) -> Result<usize, ReceiveError> {
+    pub fn try_recv(&mut self, message: &mut [u8]) -> Result<(usize, usize), ReceiveError> {
         if self.socket.is_none() {
             self.socket = self.rx_new_socket.try_recv();
         }
         if let Some(socket) = &self.socket {
             let bytes = socket.recv(message)?;
+            let read_bytes = bytes.min(message.len());
             // When a stream socket peer has performed an orderly shutdown, the
             // return value will be 0 (the traditional "end-of-file" return).
             //
@@ -100,15 +108,27 @@ impl Subscriber {
                 let _ = self.socket.take();
                 Err(ReceiveError::DisconnectDetected)
             } else {
-                Ok(bytes)
+                Ok((read_bytes, bytes))
             }
         } else {
             Err(ReceiveError::NotConnectedToPublisher)
         }
     }
+    pub fn has_connection(&self) -> bool {
+        self.has_connection.load(Ordering::Relaxed)
+    }
+    pub fn wait_until_connected(&self) {
+        while !self.has_connection() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
 }
 impl Drop for Subscriber {
     fn drop(&mut self) {
+        trace!(
+            "Subscriber {:?} was dropped",
+            self.socket.as_ref().map(|s| s.addr())
+        );
         self.local_stop_flag.store(true, Ordering::Release);
     }
 }
@@ -130,7 +150,7 @@ mod test {
         publ.try_send("hans".as_bytes()).unwrap();
 
         let mut buf = [0u8; 1000];
-        let len = sub.try_recv(&mut buf).unwrap();
+        let (len, all) = sub.try_recv(&mut buf).unwrap();
         println!("{:?}", String::from_utf8_lossy(&buf[0..len]));
         drop(publ);
         let mut publ = Publisher::new("peter").unwrap();
@@ -142,7 +162,7 @@ mod test {
         );
         publ.wait_for_subscribers(1);
         publ.try_send("hans".as_bytes()).unwrap();
-        let len = sub.try_recv(&mut buf).unwrap();
+        let (len, all) = sub.try_recv(&mut buf).unwrap();
         println!("{:?}", String::from_utf8_lossy(&buf[0..len]));
     }
 }
