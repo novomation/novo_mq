@@ -32,6 +32,7 @@ impl Publisher {
     pub(crate) fn new(
         domain: impl AsRef<Path>,
         topic: impl AsRef<str>,
+        cpu_set: linux_rt::CpuSet,
     ) -> Result<Self, TransportError> {
         let (mut uds, _) = transport::uds::Uds::new()
             .inspect_err(|err| error!("Could not create uds {err}"))?
@@ -47,6 +48,14 @@ impl Publisher {
 
         let condvar = Arc::new((Mutex::new(usize::MAX), Condvar::new()));
         let join_mgmt = std::thread::spawn({
+            if let Err(e) = linux_rt::sched::set_affinity(linux_rt::sched::Pid::this(), cpu_set.clone()) {
+                error!("Error setting affinity of managment to {:?}. Errno: {}", cpu_set, e);
+            }
+            if let Err(e) = linux_rt::sched::set_other(linux_rt::sched::Pid::this(), 0) {
+                error!("Error scheduling policy of managment to sched_other. Errno: {}", e);
+            }
+            let effective_affinity = linux_rt::sched::get_affinity(linux_rt::sched::Pid::this()).unwrap();
+            info!("Publisher management affinity: {:?}", effective_affinity);
             let local_stop_flag = local_stop_flag.clone();
             let topic = topic.as_ref().to_string();
             let condvar = condvar.clone();
@@ -171,7 +180,8 @@ mod test {
 
     #[test]
     fn smoke() {
-        let mut publ = Publisher::new("", "topic").unwrap();
+        let cpu_set = linux_rt::sched::get_affinity(linux_rt::sched::Pid::this()).unwrap();
+        let mut publ = Publisher::new("", "topic", cpu_set).unwrap();
 
         publ.try_send("message".as_bytes()).unwrap();
 

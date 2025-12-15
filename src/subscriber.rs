@@ -27,7 +27,16 @@ impl Subscriber {
     pub(crate) fn new(
         domain: impl AsRef<Path>,
         topic: impl AsRef<str>,
+        cpu_set: linux_rt::CpuSet,
     ) -> Result<Self, TransportError> {
+        if let Err(e) = linux_rt::sched::set_affinity(linux_rt::sched::Pid::this(), cpu_set.clone()) {
+            error!("Error setting affinity of managment to {:?}. Errno: {}", cpu_set, e);
+        }
+        if let Err(e) = linux_rt::sched::set_other(linux_rt::sched::Pid::this(), 0) {
+            error!("Error scheduling policy of managment to sched_other. Errno: {}", e);
+        }
+        let effective_affinity = linux_rt::sched::get_affinity(linux_rt::sched::Pid::this()).unwrap();
+        info!("Publisher management affinity: {:?}", effective_affinity);
         let local_stop_flag: Arc<AtomicBool> = Arc::new(false.into());
         let has_connection: Arc<AtomicBool> = Arc::new(false.into());
         let has_error: Arc<AtomicBool> = Arc::new(false.into());
@@ -147,8 +156,9 @@ mod test {
 
     #[test]
     fn smoke() {
-        let mut sub = Subscriber::new("", "peter").unwrap();
-        let mut publ = Publisher::new("", "peter").unwrap();
+        let cpu_set = linux_rt::sched::get_affinity(linux_rt::sched::Pid::this()).unwrap();
+        let mut sub = Subscriber::new("", "peter", cpu_set.clone()).unwrap();
+        let mut publ = Publisher::new("", "peter", cpu_set.clone()).unwrap();
         publ.wait_for_subscribers(1);
 
         publ.try_send("hans".as_bytes()).unwrap();
@@ -157,7 +167,7 @@ mod test {
         let (len, all) = sub.try_recv(&mut buf).unwrap();
         println!("{:?}", String::from_utf8_lossy(&buf[0..len]));
         drop(publ);
-        let mut publ = Publisher::new("", "peter").unwrap();
+        let mut publ = Publisher::new("", "peter", cpu_set).unwrap();
 
         let mut buf = [0u8; 1000];
         assert_eq!(

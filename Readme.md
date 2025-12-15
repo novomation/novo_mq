@@ -37,3 +37,7 @@ tx.join().unwrap();
 rx.join().unwrap();
 ```
 
+## Run Bench in Real-Time CGroup
+```bash
+ bash run_in_cgroup.sh cargo rbench
+```
