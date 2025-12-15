@@ -1,18 +1,13 @@
+use super::{
+    ManagedTransport, ReceiveError, TransportError, TransportManaging, TransportMessaging,
+};
+use crate::transport::SendError;
+use log::debug;
+use nix::sys::socket::{self, AddressFamily, Backlog, MsgFlags, SockFlag, SockType, UnixAddr};
 use std::{
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     path::Path,
     sync::{Arc, RwLock},
-};
-
-use log::debug;
-use nix::sys::socket::{
-    self, AddressFamily, Backlog, MsgFlags, SetSockOpt, SockFlag, SockType, UnixAddr, sockopt,
-};
-
-use crate::transport::SendError;
-
-use super::{
-    ManagedTransport, ReceiveError, TransportError, TransportManaging, TransportMessaging,
 };
 
 struct OwnedIpcAddress(Option<String>);
@@ -38,9 +33,6 @@ impl Uds {
             SockFlag::SOCK_NONBLOCK,
             None,
         )?;
-        Ok(Self { fd: Arc::new(fd) })
-    }
-    pub(crate) fn from_fd(fd: OwnedFd) -> Result<Self, TransportError> {
         Ok(Self { fd: Arc::new(fd) })
     }
 }
@@ -104,15 +96,6 @@ impl TransportManaging for UdsManging {
         Ok(())
     }
 
-    // fn get_peer_addr(&self) -> Option<String> {
-    //     let addr: UnixAddr = socket::getpeername(self.fd.as_raw_fd()).ok()?;
-    //     Some(addr.to_string())
-    // }
-    fn addr(&self) -> Option<String> {
-        let addr: UnixAddr = socket::getsockname(self.fd.as_raw_fd()).ok()?;
-        Some(addr.to_string())
-    }
-
     fn accept(&mut self) -> Result<impl TransportMessaging + 'static, TransportError> {
         socket::listen(&self.fd, Backlog::MAXALLOWABLE)?;
         let fd = socket::accept4(self.fd.as_raw_fd(), SockFlag::SOCK_NONBLOCK)?;
@@ -144,18 +127,18 @@ impl TransportMessaging for UdsMessaging {
         }
     }
 
-    fn recv_blocking(&self, recv_buffer: &mut [u8]) -> Result<usize, ReceiveError> {
-        let len = socket::recv(self.fd.as_raw_fd(), recv_buffer, MsgFlags::MSG_TRUNC)?;
-        Ok(len)
-    }
+    // fn recv_blocking(&self, recv_buffer: &mut [u8]) -> Result<usize, ReceiveError> {
+    //     let len = socket::recv(self.fd.as_raw_fd(), recv_buffer, MsgFlags::MSG_TRUNC)?;
+    //     Ok(len)
+    // }
 
-    fn recvfrom(&self, recv_buffer: &mut [u8]) -> Result<usize, ReceiveError> {
-        let (len, _) = socket::recvfrom::<UnixAddr>(self.fd.as_raw_fd(), recv_buffer)?;
-        Ok(len)
-    }
-    fn raw_fd(&self) -> i32 {
-        self.fd.as_raw_fd()
-    }
+    // fn recvfrom(&self, recv_buffer: &mut [u8]) -> Result<usize, ReceiveError> {
+    //     let (len, _) = socket::recvfrom::<UnixAddr>(self.fd.as_raw_fd(), recv_buffer)?;
+    //     Ok(len)
+    // }
+    // fn raw_fd(&self) -> i32 {
+    //     self.fd.as_raw_fd()
+    // }
     fn addr(&self) -> Option<String> {
         let addr: UnixAddr = socket::getsockname(self.fd.as_raw_fd()).ok()?;
         Some(addr.to_string())
@@ -223,7 +206,7 @@ mod tests {
         // We can connect only once.
         assert_eq!(
             client.connect(&sock_addr),
-            Err(TransportError::OsError(Errno::EISCONN))
+            Err(TransportError(Errno::EISCONN))
         );
     }
 
@@ -234,7 +217,7 @@ mod tests {
         assert_eq!(client.connect(&sock_addr), Ok(()));
         assert_eq!(
             client.connect(&sock_addr),
-            Err(TransportError::OsError(Errno::EISCONN))
+            Err(TransportError(Errno::EISCONN))
         );
         // We drop and delete the server fd here.
         drop(server_msg);
@@ -250,7 +233,7 @@ mod tests {
 
     #[test]
     fn send() {
-        let (rxtx, sock_addr) = spawn_server();
+        let (_rxtx, sock_addr) = spawn_server();
         let (mut client, client_rxtx) = Uds::new().unwrap().into_managed();
         assert_eq!(client.connect(&sock_addr), Ok(()));
         std::thread::sleep(Duration::from_millis(3));

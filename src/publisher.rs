@@ -1,18 +1,18 @@
 use log::{debug, error, info};
 use nix::errno::Errno;
 use std::{
+    path::Path,
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
     time::Duration,
-    usize,
 };
 use waitfree_sync::spsc;
 
 use crate::{
-    topic::encode,
+    topic::{encode, socket_path},
     transport::{
         self, ManagedTransport, SendError, TransportError, TransportManaging, TransportMessaging,
     },
@@ -29,13 +29,16 @@ pub struct Publisher {
     join_mgmt: Option<JoinHandle<()>>,
 }
 impl Publisher {
-    pub fn new(topic: impl AsRef<str>) -> Result<Self, TransportError> {
+    pub(crate) fn new(
+        domain: impl AsRef<Path>,
+        topic: impl AsRef<str>,
+    ) -> Result<Self, TransportError> {
         let (mut uds, _) = transport::uds::Uds::new()
             .inspect_err(|err| error!("Could not create uds {err}"))?
             .into_managed();
         let number_of_subscribers = Arc::new(AtomicUsize::new(0));
 
-        let socket_addr = encode(topic.as_ref());
+        let socket_addr = socket_path(domain, &topic);
         uds.bind(&socket_addr)
             .inspect_err(|err| error!("Could not bind {err}"))?;
         let (mut tx_connection, rx_connection) =
@@ -57,9 +60,9 @@ impl Publisher {
                 condvar.1.notify_one();
                 while !local_stop_flag.load(Ordering::Relaxed) {
                     let res = uds.accept().inspect_err(|err| match err {
-                        TransportError::OsError(Errno::EAGAIN) => (), // We ignore eagain. It's not an error. It just signals that nothing happend in non blocking mode.
-                        TransportError::OsError(_) => error!("Error in accept: {err}"),
-                        TransportError::IoError(_) => error!("Error in accept: {err}"),
+                        TransportError(Errno::EAGAIN) => (), // We ignore eagain. It's not an error. It just signals that nothing happend in non blocking mode.
+                        TransportError(_) => error!("Error in accept: {err}"),
+                        // TransportError::IoError(_) => error!("Error in accept: {err}"),
                     });
                     if let Ok(connection) = res {
                         info!("Got new subscriber for `{topic}`");
@@ -168,7 +171,7 @@ mod test {
 
     #[test]
     fn smoke() {
-        let mut publ = Publisher::new("topic").unwrap();
+        let mut publ = Publisher::new("", "topic").unwrap();
 
         publ.try_send("message".as_bytes()).unwrap();
 

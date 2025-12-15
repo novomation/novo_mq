@@ -1,5 +1,5 @@
 use crate::{
-    topic::encode,
+    topic::{encode, socket_path},
     transport::{
         self, ManagedTransport, ReceiveError, TransportError, TransportManaging, TransportMessaging,
     },
@@ -7,6 +7,7 @@ use crate::{
 use log::{debug, error, info, trace, warn};
 use nix::errno::Errno;
 use std::{
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -23,12 +24,14 @@ pub struct Subscriber {
     rx_new_socket: spsc::Receiver<Box<dyn TransportMessaging + Send>>,
 }
 impl Subscriber {
-    pub fn new(topic: impl AsRef<str>) -> Result<Self, TransportError> {
+    pub(crate) fn new(
+        domain: impl AsRef<Path>,
+        topic: impl AsRef<str>,
+    ) -> Result<Self, TransportError> {
         let local_stop_flag: Arc<AtomicBool> = Arc::new(false.into());
         let has_connection: Arc<AtomicBool> = Arc::new(false.into());
         let has_error: Arc<AtomicBool> = Arc::new(false.into());
-
-        let publ_addr = encode(topic.as_ref());
+        let publ_path = socket_path(domain, &topic);
 
         let (mut tx_new_socket, rx_new_socket) =
             spsc::spsc::<Box<dyn TransportMessaging + Send>>(64);
@@ -57,15 +60,16 @@ impl Subscriber {
                             }
                         };
                         let (mut uds, uds_tx) = transport.into_managed();
-                        match uds.connect(&publ_addr) {
+                        match uds.connect(&publ_path) {
                             Ok(_) => {
                                 has_connection.store(true, Ordering::Release);
-                                tx_new_socket.try_send(Box::new(uds_tx)).inspect_err(|err| {
-                                    warn!("Could not save subscriber socket -> Try again")
-                                });
+                                let _ =
+                                    tx_new_socket.try_send(Box::new(uds_tx)).inspect_err(|_| {
+                                        warn!("Could not save subscriber socket -> Try again")
+                                    });
                                 info!("Now connected to {topic}");
                             }
-                            Err(TransportError::OsError(Errno::ENOENT)) => (),
+                            Err(TransportError(Errno::ENOENT)) => (),
                             Err(err) => {
                                 error!("Could not connect {err}");
                             }
@@ -143,8 +147,8 @@ mod test {
 
     #[test]
     fn smoke() {
-        let mut sub = Subscriber::new("peter").unwrap();
-        let mut publ = Publisher::new("peter").unwrap();
+        let mut sub = Subscriber::new("", "peter").unwrap();
+        let mut publ = Publisher::new("", "peter").unwrap();
         publ.wait_for_subscribers(1);
 
         publ.try_send("hans".as_bytes()).unwrap();
@@ -153,7 +157,7 @@ mod test {
         let (len, all) = sub.try_recv(&mut buf).unwrap();
         println!("{:?}", String::from_utf8_lossy(&buf[0..len]));
         drop(publ);
-        let mut publ = Publisher::new("peter").unwrap();
+        let mut publ = Publisher::new("", "peter").unwrap();
 
         let mut buf = [0u8; 1000];
         assert_eq!(
