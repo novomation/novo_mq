@@ -1,5 +1,17 @@
 # rt-datalayer
 
+This is a minimalist, real-time-capable data layer. The publish/subscribe pattern is currently supported.
+We open a datalayer domain by creating a folder. The endpoints then create sockets inside this folder and connect to them.
+The connection between the endpoints is automatically managed in the background.
+
+
+## Use
+
+```toml
+# Cargo.toml
+rt-datalayer = { version = "0.1.0", git = "ssh://git@github.com/novomation/rt-datalayer.git" }
+```
+
 ## Example
 
 ```rust
@@ -25,9 +37,3 @@ tx.join().unwrap();
 rx.join().unwrap();
 ```
 
-## Benchmark
-cargo rbench
-
-## Generat Load
-
-stress-ng --cpu 8 --matrix 4 --mq 3 --vm 2 --vm-bytes 2G -t 20s
