@@ -7,12 +7,10 @@ use crate::{
 use log::{debug, error, info, trace, warn};
 use nix::errno::Errno;
 use std::{
-    path::Path,
-    sync::{
+    array::from_ref, path::Path, sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
+    }, time::Duration
 };
 use waitfree_sync::spsc;
 
@@ -22,6 +20,7 @@ pub struct Subscriber {
     has_error: Arc<AtomicBool>,
     socket: Option<Box<dyn TransportMessaging + Send>>,
     rx_new_socket: spsc::Receiver<Box<dyn TransportMessaging + Send>>,
+    topic: String,
 }
 impl Subscriber {
     pub(crate) fn new(
@@ -96,6 +95,7 @@ impl Subscriber {
             has_error,
             socket: None,
             rx_new_socket,
+            topic: topic.as_ref().to_string()
         })
     }
     pub fn try_recv(&mut self, message: &mut [u8]) -> Result<(usize, usize), ReceiveError> {
@@ -134,6 +134,9 @@ impl Subscriber {
         while !self.has_connection() {
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+    pub fn get_topic(&self) -> &str {
+        &self.topic
     }
 }
 impl Drop for Subscriber {
