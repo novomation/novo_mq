@@ -23,7 +23,7 @@ pub enum ReceiveError {
 pub enum SendError {
     #[error("System Error {0}")]
     OsError(#[from] nix::Error),
-    #[error("Zero bytes are not allowed")]
+    #[error("Sending zero bytes is not allowed")]
     ZeroBytes,
 }
 

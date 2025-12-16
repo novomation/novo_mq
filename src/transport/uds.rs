@@ -150,12 +150,19 @@ unsafe impl Sync for UdsMessaging {}
 
 #[cfg(test)]
 mod tests {
-    use nix::errno::Errno;
-    use std::{sync::atomic::AtomicBool, time::Duration};
-    use test_log::test;
-
     use super::*;
-    use crate::transport::{ManagedTransport, TransportManaging, TransportMessaging};
+    use crate::{
+        cancelation::CancelationToken,
+        transport::{ManagedTransport, TransportManaging, TransportMessaging},
+    };
+    use log::trace;
+    use nix::errno::Errno;
+    use std::{
+        sync::{atomic::AtomicBool, mpsc::Receiver},
+        thread::JoinHandle,
+        time::Duration,
+    };
+    use test_log::test;
 
     #[test]
     fn smoke() {
@@ -173,46 +180,65 @@ mod tests {
         assert!(res.is_ok());
     }
 
-    fn spawn_server() -> (UdsMessaging, String) {
+    fn spawn_server() -> (
+        UdsMessaging,
+        String,
+        Receiver<Box<dyn TransportMessaging + Send + 'static>>,
+        CancelationToken,
+        JoinHandle<()>,
+    ) {
         let (mut server_mgd, server_msg) = Uds::new().unwrap().into_managed();
         let sock_addr = uuid::Uuid::new_v4().to_string();
         server_mgd.bind(&sock_addr).unwrap();
         let start_accepting = Arc::new(AtomicBool::new(false));
-        std::thread::spawn({
+        let (tx, rx) = std::sync::mpsc::channel::<Box<dyn TransportMessaging + 'static + Send>>();
+        let ct = CancelationToken::new();
+        let join = std::thread::spawn({
             let start_accepting = start_accepting.clone();
+            let ct = ct.clone();
             move || {
                 start_accepting.store(true, std::sync::atomic::Ordering::Release);
-                server_mgd.accept().unwrap();
-                println!("Drop server_mgd");
+                while !ct.is_cancelled() {
+                    if let Ok(con) = server_mgd.accept() {
+                        let _ = tx.send(Box::new(con));
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                trace!("Exit mngmt")
             }
         });
         while !start_accepting.load(std::sync::atomic::Ordering::Acquire) {
             std::thread::sleep(Duration::from_millis(2));
         }
-        (server_msg, sock_addr)
+        (server_msg, sock_addr, rx, ct, join)
     }
 
     #[test]
     fn connect_on_closed_socket() {
-        let (_mng, addr) = spawn_server();
+        let (_mng, addr, _, ct, join) = spawn_server();
         let (mut client, _) = Uds::new().unwrap().into_managed();
         assert_eq!(client.connect(&addr), Ok(()));
+        ct.cancel();
+        join.join().unwrap();
     }
     #[test]
     fn accept_connect() {
-        let (_server_msg, sock_addr) = spawn_server();
+        let (_server_msg, sock_addr, rx, ct, join) = spawn_server();
         let (mut client, _) = Uds::new().unwrap().into_managed();
         assert_eq!(client.connect(&sock_addr), Ok(()));
+        let _ = rx.recv();
         // We can connect only once.
         assert_eq!(
             client.connect(&sock_addr),
             Err(TransportError(Errno::EISCONN))
         );
+        ct.cancel();
+        join.join().unwrap();
     }
 
     #[test]
     fn accept_connect_reconnect() {
-        let (server_msg, sock_addr) = spawn_server();
+        let (server_msg, sock_addr, _, ct, join) = spawn_server();
         let (mut client, client_recv) = Uds::new().unwrap().into_managed();
         assert_eq!(client.connect(&sock_addr), Ok(()));
         assert_eq!(
@@ -229,89 +255,74 @@ mod tests {
         assert_eq!(client_recv.recv(&mut buf), Ok(0));
         // The client still has a peer. We need to set up a new connection.
         assert_eq!(client.peer_name(), Some(sock_addr));
+        ct.cancel();
+        join.join().unwrap();
     }
 
     #[test]
-    fn send() {
-        let (_rxtx, sock_addr) = spawn_server();
+    fn send_recv() {
+        let (_, sock_addr, rx_serv_rxtx, ct, join) = spawn_server();
         let (mut client, client_rxtx) = Uds::new().unwrap().into_managed();
         assert_eq!(client.connect(&sock_addr), Ok(()));
-        std::thread::sleep(Duration::from_millis(3));
-        // let res = client_rxtx.send("msg".as_bytes());
-        // assert!(res.is_err());
-        // assert_eq!(rxtx.send("msg".as_bytes()), Ok(3));
-    }
-
-    #[test]
-    fn recv() {
-        let (mut sock, rxtx) = Uds::new().unwrap().into_managed();
-        let sock_addr = uuid::Uuid::new_v4().to_string();
-        sock.bind(&sock_addr).unwrap();
-
-        let (mut sock2, rxtx2) = Uds::new().unwrap().into_managed();
-
-        sock2.connect(&sock_addr).unwrap();
-
-        let res = rxtx.send("msg".as_bytes());
-        assert!(res.is_err());
-        let res = rxtx2.send("msg".as_bytes());
-        assert!(res.is_ok());
-
-        let mut buf: [u8; 1024] = [0; 1024];
-        let res = rxtx.recv(&mut buf);
-        assert!(res.is_ok());
+        let serv_rxtx = rx_serv_rxtx.recv().unwrap();
+        assert_eq!(client_rxtx.send("msg".as_bytes()), Ok(3));
+        let mut buf = [0_u8, 2];
+        assert_eq!(serv_rxtx.recv(&mut buf), Ok(3));
+        assert_eq!(
+            serv_rxtx.recv(&mut buf),
+            Err(ReceiveError::NoMessageAvailable)
+        );
+        ct.cancel();
+        join.join().unwrap();
     }
 
     #[test]
     fn pub_sub() {
-        let (mut publ, publ_tx) = Uds::new().unwrap().into_managed();
-        let publ_sock_addr = uuid::Uuid::new_v4().to_string();
-        publ.bind(&publ_sock_addr).unwrap();
-        std::thread::spawn(move || {
-            loop {
-                publ.accept().unwrap();
-            }
-        });
-        std::thread::sleep(Duration::from_millis(3));
+        let (_, publ_sock_addr, rx_serv_rxtx, ct, join) = spawn_server();
 
         let (mut sub1, sub1_rx) = Uds::new().unwrap().into_managed();
         sub1.connect(&publ_sock_addr).unwrap();
+        let serv_tx1 = rx_serv_rxtx.recv().unwrap();
 
         let (mut sub2, sub2_rx) = Uds::new().unwrap().into_managed();
         sub2.connect(&publ_sock_addr).unwrap();
+        let serv_tx2 = rx_serv_rxtx.recv().unwrap();
 
-        // let res = publ_tx.send("msg1".as_bytes()).unwrap();
+        assert_eq!(serv_tx1.send("msg1".as_bytes()), Ok(4));
 
-        // let res = publ_tx.send("msg2".as_bytes()).unwrap();
-
-        // let mut buf: [u8; 1024] = [0; 1024];
-        // let res = sub1_rx.recv(&mut buf);
-        // println!("{res:?}");
-        // let res = sub2_rx.recv(&mut buf);
-        // println!("{res:?}");
-
-        // assert!(res.is_ok());
-    }
-
-    #[test]
-    fn manage() {
-        let (mut sock2, rxtx2) = Uds::new().unwrap().into_managed();
-        let sock_addr2 = uuid::Uuid::new_v4().to_string();
-        sock2.bind(&sock_addr2).unwrap();
-
-        let (mut sock, rxtx) = Uds::new().unwrap().into_managed();
-        // sock.bind("addr").unwrap();
-        sock.connect(&sock_addr2).unwrap();
-        let sendstr = "msg78ho8dhgfds";
-        std::thread::spawn(move || {
-            rxtx.send(sendstr.as_bytes()).unwrap();
-        })
-        .join()
-        .unwrap();
+        assert_eq!(serv_tx2.send("msg2".as_bytes()), Ok(4));
 
         let mut buf: [u8; 1024] = [0; 1024];
-        let res = rxtx2.recv(&mut buf).unwrap();
-        let recvstr = std::str::from_utf8(&buf[0..res]).unwrap();
-        assert_eq!(sendstr, recvstr);
+        assert_eq!(sub1_rx.recv(&mut buf), Ok(4));
+        assert_eq!(
+            String::from_utf8_lossy(&buf[0..4]).to_string(),
+            "msg1".to_string()
+        );
+
+        assert_eq!(sub2_rx.recv(&mut buf), Ok(4));
+        ct.cancel();
+        join.join().unwrap();
     }
+
+    // #[test]
+    // fn manage() {
+    //     let (mut serv, serv_rxtx) = Uds::new().unwrap().into_managed();
+    //     let serv_addr = uuid::Uuid::new_v4().to_string();
+    //     serv.bind(&serv_addr).unwrap();
+
+    //     let (mut cli, cli_rxtx) = Uds::new().unwrap().into_managed();
+    //     // sock.bind("addr").unwrap();
+    //     cli.connect(&serv_addr).unwrap();
+    //     let sendstr = "msg78ho8dhgfds";
+    //     std::thread::spawn(move || {
+    //         rxtx.send(sendstr.as_bytes()).unwrap();
+    //     })
+    //     .join()
+    //     .unwrap();
+
+    //     let mut buf: [u8; 1024] = [0; 1024];
+    //     let res = rxtx2.recv(&mut buf).unwrap();
+    //     let recvstr = std::str::from_utf8(&buf[0..res]).unwrap();
+    //     assert_eq!(sendstr, recvstr);
+    // }
 }

@@ -1,27 +1,28 @@
+use crate::{
+    cancelation::CancelationToken,
+    helpers::set_calling_thread_to_nrt,
+    topic::socket_path,
+    transport::{
+        self, ManagedTransport, SendError, TransportError, TransportManaging, TransportMessaging,
+    },
+};
 use log::{debug, error, info};
 use nix::errno::Errno;
 use std::{
     path::Path,
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     thread::JoinHandle,
     time::Duration,
 };
 use waitfree_sync::spsc;
 
-use crate::{
-    topic::{encode, socket_path},
-    transport::{
-        self, ManagedTransport, SendError, TransportError, TransportManaging, TransportMessaging,
-    },
-};
-
 pub struct Publisher {
     connections: Vec<(Box<dyn TransportMessaging + Send>, usize)>,
     rx_connection: spsc::Receiver<Box<dyn TransportMessaging + Send>>,
-    local_stop_flag: Arc<AtomicBool>,
+    cancel_token: CancelationToken,
     number_of_subscribers: Arc<AtomicUsize>,
 
     topic: String,
@@ -32,8 +33,8 @@ impl Publisher {
     pub(crate) fn new(
         domain: impl AsRef<Path>,
         topic: impl AsRef<str>,
-        cpu_set: linux_rt::CpuSet,
     ) -> Result<Self, TransportError> {
+        // Create publisher socket
         let (mut uds, _) = transport::uds::Uds::new()
             .inspect_err(|err| error!("Could not create uds {err}"))?
             .into_managed();
@@ -44,34 +45,25 @@ impl Publisher {
             .inspect_err(|err| error!("Could not bind {err}"))?;
         let (mut tx_connection, rx_connection) =
             spsc::spsc::<Box<dyn TransportMessaging + Send>>(64);
-        let local_stop_flag: Arc<AtomicBool> = Arc::new(false.into());
+        let cancel_token = CancelationToken::new();
 
         let condvar = Arc::new((Mutex::new(usize::MAX), Condvar::new()));
         let join_mgmt = std::thread::spawn({
-            if let Err(e) = linux_rt::sched::set_affinity(linux_rt::sched::Pid::this(), cpu_set.clone()) {
-                error!("Error setting affinity of managment to {:?}. Errno: {}", cpu_set, e);
-            }
-            if let Err(e) = linux_rt::sched::set_other(linux_rt::sched::Pid::this(), 0) {
-                error!("Error scheduling policy of managment to sched_other. Errno: {}", e);
-            }
-            let effective_affinity = linux_rt::sched::get_affinity(linux_rt::sched::Pid::this()).unwrap();
-            info!("Publisher management affinity: {:?}", effective_affinity);
-            let local_stop_flag = local_stop_flag.clone();
+            let cancel_token = cancel_token.clone();
             let topic = topic.as_ref().to_string();
             let condvar = condvar.clone();
             let number_of_subscribers = number_of_subscribers.clone();
-
             move || {
+                set_calling_thread_to_nrt();
                 debug!("Start publisher `{topic}` mgmt thread and waiting for subscribers");
                 if let Ok(mut c) = condvar.0.lock() {
                     *c = 0;
                 }
                 condvar.1.notify_one();
-                while !local_stop_flag.load(Ordering::Relaxed) {
+                while !cancel_token.is_cancelled() {
                     let res = uds.accept().inspect_err(|err| match err {
                         TransportError(Errno::EAGAIN) => (), // We ignore eagain. It's not an error. It just signals that nothing happend in non blocking mode.
                         TransportError(_) => error!("Error in accept: {err}"),
-                        // TransportError::IoError(_) => error!("Error in accept: {err}"),
                     });
                     if let Ok(connection) = res {
                         info!("Got new subscriber for `{topic}`");
@@ -102,7 +94,7 @@ impl Publisher {
         Ok(Self {
             connections: Vec::with_capacity(64),
             rx_connection,
-            local_stop_flag,
+            cancel_token,
             topic: topic.as_ref().to_string(),
             condvar,
             number_of_subscribers,
@@ -166,7 +158,8 @@ impl Publisher {
 }
 impl Drop for Publisher {
     fn drop(&mut self) {
-        self.local_stop_flag.store(true, Ordering::Relaxed);
+        self.cancel_token.cancel();
+        // Wait for the managment thread to finish so that everything is dropped.
         if let Some(join_mgmt) = self.join_mgmt.take() {
             let _ = join_mgmt.join();
         }
@@ -176,12 +169,12 @@ impl Drop for Publisher {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::topic::encode;
     use test_log::test;
 
     #[test]
     fn smoke() {
-        let cpu_set = linux_rt::sched::get_affinity(linux_rt::sched::Pid::this()).unwrap();
-        let mut publ = Publisher::new("", "topic", cpu_set).unwrap();
+        let mut publ = Publisher::new("", "topic").unwrap();
 
         publ.try_send("message".as_bytes()).unwrap();
 

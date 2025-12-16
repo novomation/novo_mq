@@ -1,5 +1,7 @@
 use crate::{
-    topic::{encode, socket_path},
+    cancelation::CancelationToken,
+    helpers::set_calling_thread_to_nrt,
+    topic::socket_path,
     transport::{
         self, ManagedTransport, ReceiveError, TransportError, TransportManaging, TransportMessaging,
     },
@@ -7,15 +9,17 @@ use crate::{
 use log::{debug, error, info, trace, warn};
 use nix::errno::Errno;
 use std::{
-    array::from_ref, path::Path, sync::{
+    path::Path,
+    sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-    }, time::Duration
+    },
+    time::Duration,
 };
 use waitfree_sync::spsc;
 
 pub struct Subscriber {
-    local_stop_flag: Arc<AtomicBool>,
+    _cancel_token: CancelationToken, // Unused because we only need this to be dropped
     has_connection: Arc<AtomicBool>,
     has_error: Arc<AtomicBool>,
     socket: Option<Box<dyn TransportMessaging + Send>>,
@@ -26,9 +30,8 @@ impl Subscriber {
     pub(crate) fn new(
         domain: impl AsRef<Path>,
         topic: impl AsRef<str>,
-        cpu_set: linux_rt::CpuSet,
     ) -> Result<Self, TransportError> {
-        let local_stop_flag: Arc<AtomicBool> = Arc::new(false.into());
+        let cancel_token = CancelationToken::new();
         let has_connection: Arc<AtomicBool> = Arc::new(false.into());
         let has_error: Arc<AtomicBool> = Arc::new(false.into());
         let publ_path = socket_path(domain, &topic);
@@ -37,26 +40,14 @@ impl Subscriber {
             spsc::spsc::<Box<dyn TransportMessaging + Send>>(64);
 
         std::thread::spawn({
-            if let Err(e) = linux_rt::sched::set_affinity(linux_rt::sched::Pid::this(), cpu_set.clone()) {
-                error!("Error setting affinity of managment to {:?}. Errno: {}", cpu_set, e);
-            }
-            if let Err(e) = linux_rt::sched::set_other(linux_rt::sched::Pid::this(), 0) {
-                error!("Error scheduling policy of managment to sched_other. Errno: {}", e);
-            }
-            let effective_affinity = linux_rt::sched::get_affinity(linux_rt::sched::Pid::this()).unwrap();
-            info!("Publisher management affinity: {:?}", effective_affinity);    
-            let local_stop_flag = local_stop_flag.clone();
+            let cancel_token = cancel_token.clone();
             let has_connection = has_connection.clone();
             let has_error = has_error.clone();
-
             let topic = topic.as_ref().to_string();
             move || {
+                set_calling_thread_to_nrt();
                 debug!("Start subscriber `{topic}` mgmt thread and try to connect");
-                trace!(
-                    "local_stop_flag={}",
-                    local_stop_flag.load(Ordering::Relaxed)
-                );
-                while !local_stop_flag.load(Ordering::Relaxed) {
+                while !cancel_token.is_cancelled() {
                     if !has_connection.load(Ordering::Acquire) {
                         // info!("Try to connect subscriber to `{topic}`");
                         let transport = match transport::uds::Uds::new() {
@@ -91,7 +82,7 @@ impl Subscriber {
             }
         });
         Ok(Self {
-            local_stop_flag,
+            _cancel_token: cancel_token,
             has_connection,
             has_error,
             socket: None,
@@ -146,7 +137,6 @@ impl Drop for Subscriber {
             "Subscriber {:?} was dropped",
             self.socket.as_ref().map(|s| s.addr())
         );
-        self.local_stop_flag.store(true, Ordering::Release);
     }
 }
 
@@ -155,23 +145,22 @@ mod test {
     use crate::publisher::Publisher;
 
     use super::*;
-    use std::time::Duration;
+
     use test_log::test;
 
     #[test]
     fn smoke() {
-        let cpu_set = linux_rt::sched::get_affinity(linux_rt::sched::Pid::this()).unwrap();
-        let mut sub = Subscriber::new("", "peter", cpu_set.clone()).unwrap();
-        let mut publ = Publisher::new("", "peter", cpu_set.clone()).unwrap();
+        let mut sub = Subscriber::new("", "peter").unwrap();
+        let mut publ = Publisher::new("", "peter").unwrap();
         publ.wait_for_subscribers(1);
 
         publ.try_send("hans".as_bytes()).unwrap();
 
         let mut buf = [0u8; 1000];
-        let (len, all) = sub.try_recv(&mut buf).unwrap();
+        let (len, _) = sub.try_recv(&mut buf).unwrap();
         println!("{:?}", String::from_utf8_lossy(&buf[0..len]));
         drop(publ);
-        let mut publ = Publisher::new("", "peter", cpu_set).unwrap();
+        let mut publ = Publisher::new("", "peter").unwrap();
 
         let mut buf = [0u8; 1000];
         assert_eq!(
@@ -180,7 +169,7 @@ mod test {
         );
         publ.wait_for_subscribers(1);
         publ.try_send("hans".as_bytes()).unwrap();
-        let (len, all) = sub.try_recv(&mut buf).unwrap();
+        let (len, _) = sub.try_recv(&mut buf).unwrap();
         println!("{:?}", String::from_utf8_lossy(&buf[0..len]));
     }
 }
