@@ -28,14 +28,6 @@ impl Subscriber {
         topic: impl AsRef<str>,
         cpu_set: linux_rt::CpuSet,
     ) -> Result<Self, TransportError> {
-        if let Err(e) = linux_rt::sched::set_affinity(linux_rt::sched::Pid::this(), cpu_set.clone()) {
-            error!("Error setting affinity of managment to {:?}. Errno: {}", cpu_set, e);
-        }
-        if let Err(e) = linux_rt::sched::set_other(linux_rt::sched::Pid::this(), 0) {
-            error!("Error scheduling policy of managment to sched_other. Errno: {}", e);
-        }
-        let effective_affinity = linux_rt::sched::get_affinity(linux_rt::sched::Pid::this()).unwrap();
-        info!("Publisher management affinity: {:?}", effective_affinity);
         let local_stop_flag: Arc<AtomicBool> = Arc::new(false.into());
         let has_connection: Arc<AtomicBool> = Arc::new(false.into());
         let has_error: Arc<AtomicBool> = Arc::new(false.into());
@@ -45,6 +37,14 @@ impl Subscriber {
             spsc::spsc::<Box<dyn TransportMessaging + Send>>(64);
 
         std::thread::spawn({
+            if let Err(e) = linux_rt::sched::set_affinity(linux_rt::sched::Pid::this(), cpu_set.clone()) {
+                error!("Error setting affinity of managment to {:?}. Errno: {}", cpu_set, e);
+            }
+            if let Err(e) = linux_rt::sched::set_other(linux_rt::sched::Pid::this(), 0) {
+                error!("Error scheduling policy of managment to sched_other. Errno: {}", e);
+            }
+            let effective_affinity = linux_rt::sched::get_affinity(linux_rt::sched::Pid::this()).unwrap();
+            info!("Publisher management affinity: {:?}", effective_affinity);    
             let local_stop_flag = local_stop_flag.clone();
             let has_connection = has_connection.clone();
             let has_error = has_error.clone();
@@ -79,9 +79,10 @@ impl Subscriber {
                             }
                             Err(TransportError(Errno::ENOENT)) => (),
                             Err(err) => {
-                                error!("Could not connect {err}");
+                                debug!("Could not connect {err}");
                             }
                         }
+                        std::thread::sleep(Duration::from_millis(100));
                     } else {
                         std::thread::sleep(Duration::from_secs(1));
                     }
@@ -95,7 +96,7 @@ impl Subscriber {
             has_error,
             socket: None,
             rx_new_socket,
-            topic: topic.as_ref().to_string()
+            topic: topic.as_ref().to_string(),
         })
     }
     pub fn try_recv(&mut self, message: &mut [u8]) -> Result<(usize, usize), ReceiveError> {
