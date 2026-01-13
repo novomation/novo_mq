@@ -1,7 +1,8 @@
 mod cancelation;
 pub mod datalayer;
+mod helpers;
 pub mod publisher;
 pub mod subscriber;
 mod topic;
 mod transport;
-mod helpers;
+pub use transport::TransportError;
