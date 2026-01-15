@@ -9,6 +9,7 @@ use crate::{
 use log::{debug, error, info};
 use nix::errno::Errno;
 use std::{
+    fmt::Debug,
     path::Path,
     sync::{
         Arc, Condvar, Mutex,
@@ -163,6 +164,19 @@ impl Drop for Publisher {
         if let Some(join_mgmt) = self.join_mgmt.take() {
             let _ = join_mgmt.join();
         }
+    }
+}
+impl Debug for Publisher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Publisher")
+            .field("connections", &self.connections.len())
+            // .field("rx_connection", &self.rx_connection)
+            // .field("cancel_token", &self.cancel_token)
+            .field("number_of_subscribers", &self.number_of_subscribers)
+            .field("topic", &self.topic)
+            // .field("condvar", &self.condvar)
+            // .field("join_mgmt", &self.join_mgmt)
+            .finish()
     }
 }
 

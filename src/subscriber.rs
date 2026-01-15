@@ -9,6 +9,7 @@ use crate::{
 use log::{debug, error, info, trace, warn};
 use nix::errno::Errno;
 use std::{
+    fmt::Debug,
     path::Path,
     sync::{
         Arc,
@@ -25,6 +26,11 @@ pub struct Subscriber {
     socket: Option<Box<dyn TransportMessaging + Send>>,
     rx_new_socket: spsc::Receiver<Box<dyn TransportMessaging + Send>>,
     topic: String,
+}
+
+struct SubscriberConfig {
+    inherit_mgmt_thread_from_parent: bool,
+    hold_mgmt_until_signal: bool,
 }
 impl Subscriber {
     pub(crate) fn new(
@@ -137,6 +143,25 @@ impl Drop for Subscriber {
             "Subscriber {:?} was dropped",
             self.socket.as_ref().map(|s| s.addr())
         );
+    }
+}
+impl Debug for Subscriber {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let socket_str = match &self.socket {
+            Some(s) => match s.addr() {
+                Some(addr) => addr,
+                None => "?".to_string(),
+            },
+            None => "None".to_string(),
+        };
+        f.debug_struct("Subscriber")
+            // .field("_cancel_token", &self._cancel_token)
+            .field("has_connection", &self.has_connection)
+            .field("has_error", &self.has_error)
+            .field("socket", &socket_str)
+            // .field("rx_new_socket", &self.rx_new_socket)
+            .field("topic", &self.topic)
+            .finish()
     }
 }
 
