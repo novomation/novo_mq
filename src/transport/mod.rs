@@ -17,6 +17,10 @@ pub enum ReceiveError {
     NotConnectedToPublisher,
     #[error("Cannot connect to subscriber.")]
     ConnectImpossible,
+    #[error("Internal buffer too small.")]
+    InternalBufferToSmall,
+    #[error("Your external buffer is too small (buffer_len, received_len): {0:?}")]
+    ExternalBufferToSmall((usize, usize)),
 }
 
 #[derive(Error, Debug, PartialEq)]

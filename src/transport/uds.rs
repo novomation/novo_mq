@@ -3,8 +3,11 @@ use super::{
 };
 use crate::transport::SendError;
 use log::debug;
-use nix::sys::socket::{self, AddressFamily, Backlog, MsgFlags, SockFlag, SockType, UnixAddr};
+use nix::sys::socket::{
+    self, AddressFamily, Backlog, MsgFlags, RecvMsg, SockFlag, SockType, UnixAddr,
+};
 use std::{
+    io::IoSliceMut,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     path::Path,
     sync::{Arc, RwLock},
@@ -115,13 +118,25 @@ impl TransportMessaging for UdsMessaging {
     }
 
     fn recv(&self, recv_buffer: &mut [u8]) -> Result<usize, ReceiveError> {
-        let res = socket::recv(
-            self.fd.as_raw_fd(),
-            recv_buffer,
-            MsgFlags::MSG_TRUNC | MsgFlags::MSG_DONTWAIT,
-        );
+        let recv_buffer_len = recv_buffer.len();
+        let mut iov = [IoSliceMut::new(recv_buffer)];
+        let flags = MsgFlags::MSG_TRUNC | MsgFlags::MSG_DONTWAIT;
+        let mut cmsg_buffer = [0u8; 1];
+
+        let res: Result<RecvMsg<()>, nix::errno::Errno> =
+            socket::recvmsg(self.fd.as_raw_fd(), &mut iov, Some(&mut cmsg_buffer), flags);
+
         match res {
-            Ok(len) => Ok(len),
+            Ok(res) => {
+                if res.flags.contains(MsgFlags::MSG_TRUNC) {
+                    return Err(ReceiveError::ExternalBufferToSmall((
+                        recv_buffer_len,
+                        res.bytes,
+                    )));
+                } else {
+                    return Ok(res.bytes);
+                }
+            }
             Err(nix::errno::Errno::EAGAIN) => Err(ReceiveError::NoMessageAvailable),
             Err(err) => Err(err.into()),
         }
@@ -267,7 +282,10 @@ mod tests {
         let serv_rxtx = rx_serv_rxtx.recv().unwrap();
         assert_eq!(client_rxtx.send("msg".as_bytes()), Ok(3));
         let mut buf = [0_u8, 2];
-        assert_eq!(serv_rxtx.recv(&mut buf), Ok(3));
+        assert_eq!(
+            serv_rxtx.recv(&mut buf),
+            Err(ReceiveError::ExternalBufferToSmall((2, 3)))
+        );
         assert_eq!(
             serv_rxtx.recv(&mut buf),
             Err(ReceiveError::NoMessageAvailable)
