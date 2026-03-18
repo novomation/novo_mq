@@ -141,7 +141,8 @@ impl Publisher {
                 Err(SendError::OsError(Errno::EAGAIN)) => {
                     *lost_msg += 1;
                 }
-                Err(SendError::OsError(Errno::ECONNRESET)) => {
+                Err(SendError::OsError(Errno::ECONNRESET))
+                | Err(SendError::OsError(Errno::EPIPE)) => {
                     let _ = connections_to_remove.push(i);
                 }
                 Err(err) => {
