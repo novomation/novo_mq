@@ -129,12 +129,12 @@ impl TransportMessaging for UdsMessaging {
         match res {
             Ok(res) => {
                 if res.flags.contains(MsgFlags::MSG_TRUNC) {
-                    return Err(ReceiveError::ExternalBufferToSmall((
+                    Err(ReceiveError::ExternalBufferToSmall((
                         recv_buffer_len,
                         res.bytes,
-                    )));
+                    )))
                 } else {
-                    return Ok(res.bytes);
+                    Ok(res.bytes)
                 }
             }
             Err(nix::errno::Errno::EAGAIN) => Err(ReceiveError::NoMessageAvailable),
