@@ -5,7 +5,6 @@ use linux_rt::{
     sched::{Pid, set_affinity, set_fifo},
 };
 use log::{debug, info, warn};
-use plotly::{Layout, Plot, Scatter, common::Mode, layout::Axis};
 use rt_datalayer::{datalayer::Datalayer, subscriber::Subscriber};
 use std::{
     sync::{
@@ -15,7 +14,6 @@ use std::{
     time::Duration,
 };
 use waitfree_sync::spsc::spsc;
-const SAMPLE: usize = 20_000;
 const CYCLETIME_US: u64 = 1_000;
 
 #[repr(C, packed)]
@@ -113,7 +111,7 @@ fn main() {
 
     let rx_bounded = Arc::new(AtomicBool::new(false));
 
-    let tx_handle = std::thread::spawn({
+    let _ = std::thread::spawn({
         let rx_bounded = rx_bounded.clone();
         let stop_flag = stop_flag.clone();
         move || {
@@ -145,7 +143,7 @@ fn main() {
         }
     });
     let (mut tx_lat, mut rx_lat) = spsc(1024);
-    let rx_handle = std::thread::spawn(move || {
+    let _ = std::thread::spawn(move || {
         info!("RX Spawned");
 
         // let mut rx_times = Vec::with_capacity(30_000);
@@ -158,7 +156,6 @@ fn main() {
         set_fifo(Pid::this(), 95).unwrap();
 
         info!("RX ready");
-        let mut count = 0;
 
         while !stop_flag.load(Ordering::Relaxed) {
             if let Ok((len, _)) = p.try_recv(&mut buffer) {
@@ -166,13 +163,10 @@ fn main() {
                 assert_eq!(len, 16);
                 let msg = Payload::from_bytes(&buffer);
                 let latency = (t_rx - msg.time) as f64 / 1000.0;
-                tx_lat.try_send(latency);
-                count += 1;
-                // info!("Lat {latency} us");
+                tx_lat.try_send(latency).unwrap();
             }
         }
         info!("RX Done");
-        // rx_times
     });
     let mut mma = MinMaxAvgCollector::new();
     loop {
@@ -194,79 +188,4 @@ fn main() {
 
         std::thread::sleep(Duration::from_millis(400));
     }
-    // while !rx_bounded.load(Ordering::Relaxed) {
-    //     std::thread::sleep(Duration::from_millis(2));
-    // }
-    // run_nrt_load_in_background(20, 500, CYCLETIME_US / 2, stop_flag.clone());
-    // let tx_times = tx_handle.join().unwrap();
-    // let rx_times = rx_handle.join().unwrap();
-    // stop_flag.store(true, Ordering::Relaxed);
-    // info!("Benchmark done -> Make plot");
-    // // Evaluate measurement
-    // let mut latency = vec![];
-    // let mut id = vec![];
-
-    // for i in 0..SAMPLE {
-    //     if let Some(tx) = tx_times.iter().find(|el| el.0 == i)
-    //         && let Some(rx) = rx_times.iter().find(|el| el.0 == i)
-    //     {
-    //         latency.push((rx.1 - tx.1).as_nanoseconds() as f64 / 1000.0);
-    //         id.push(i);
-    //     }
-    // // }
-
-    // let mut plot = Plot::new();
-    // let trace = Scatter::new(id, latency).mode(Mode::Lines).name("Latency");
-    // plot.add_trace(trace);
-    // plot.set_layout(
-    //     Layout::new()
-    //         .title(format!(
-    //             "rt-datalyer: Latency benchmark with cycle_us={CYCLETIME_US}",
-    //         ))
-    //         .x_axis(Axis::new().title("Packet ID"))
-    //         .y_axis(Axis::new().title("Latency in μs")),
-    // );
-    // plot.write_html("out.html");
-}
-
-pub fn run_nrt_load_in_background(
-    num_nrt_threads: usize,
-    offset_ms: u64,
-    cycletime_us: u64,
-    stop_flag: Arc<AtomicBool>,
-) {
-    let handels = (0..num_nrt_threads)
-        .map(|i| {
-            std::thread::spawn({
-                let stop_flag = stop_flag.clone();
-                move || {
-                    let start = std::time::Instant::now();
-                    while !stop_flag.load(Ordering::Relaxed)
-                        && start.elapsed().as_millis() < offset_ms as u128 * i as u128
-                    {
-                        std::thread::sleep(Duration::from_micros(cycletime_us));
-                    }
-                    let datalayer = Datalayer::open("domain").unwrap();
-                    let mut sub: Subscriber = datalayer.subscriber("topic").unwrap();
-                    let mut buf = [0u8; 4];
-                    let mut count = 0;
-                    while !stop_flag.load(Ordering::Relaxed) {
-                        if let Ok((len, all)) = sub.try_recv(&mut buf) {
-                            count += 1;
-                            // info!(
-                            //     "sub[{i}] Got data {:?} dropped {} bytes",
-                            //     &buf[0..len],
-                            //     all - len
-                            // );
-                        }
-                        if count != 0 && count != SAMPLE && count % 500 == 0 {
-                            info!("sub {i}: Received {count}");
-                        }
-                        std::thread::sleep(Duration::from_micros(cycletime_us));
-                    }
-                    info!("Exit NRT {i}")
-                }
-            })
-        })
-        .collect::<Vec<_>>();
 }
