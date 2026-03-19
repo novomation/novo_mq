@@ -28,10 +28,6 @@ pub struct Subscriber {
     topic: String,
 }
 
-struct SubscriberConfig {
-    inherit_mgmt_thread_from_parent: bool,
-    hold_mgmt_until_signal: bool,
-}
 impl Subscriber {
     pub(crate) fn new(
         domain: impl AsRef<Path>,
