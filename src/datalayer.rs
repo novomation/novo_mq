@@ -1,5 +1,6 @@
 use crate::{publisher::Publisher, subscriber::Subscriber, transport::TransportError};
 use linux_rt::CpuSet;
+use log::warn;
 use std::path::{Path, PathBuf};
 
 pub struct Datalayer {
@@ -39,6 +40,24 @@ impl Datalayer {
     }
 }
 
+impl Drop for Datalayer {
+    fn drop(&mut self) {
+        // Try to remove directory only if it's empty
+        match std::fs::remove_dir(&self.domain_path) {
+            Ok(_) => (),
+            Err(e) => {
+                // Ignore "not empty" errors, log others if needed
+                if e.kind() != std::io::ErrorKind::DirectoryNotEmpty {
+                    warn!(
+                        "Failed to cleanup domain directory `{:?}``: {}",
+                        self.domain_path, e
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,5 +84,7 @@ mod tests {
         });
         tx.join().unwrap();
         rx.join().unwrap();
+        // Check drop cleaned up!
+        assert!(!Path::new("test_domain").exists());
     }
 }
