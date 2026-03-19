@@ -92,6 +92,9 @@ impl Subscriber {
             topic: topic.as_ref().to_string(),
         })
     }
+
+    // #[rtsan_standalone::nonblocking]
+    #[cfg_attr(feature = "rtsan", rtsan_standalone::nonblocking)]
     pub fn try_recv(&mut self, message: &mut [u8]) -> Result<(usize, usize), ReceiveError> {
         if self.socket.is_none() {
             self.socket = self.rx_new_socket.try_recv();

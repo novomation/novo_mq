@@ -8,6 +8,7 @@ use crate::{
 };
 use log::{debug, error, info};
 use nix::errno::Errno;
+
 use std::{
     fmt::Debug,
     path::Path,
@@ -122,6 +123,9 @@ impl Publisher {
         }
         info!("Waited and now there are {number_of_subscribers} subscribers");
     }
+
+    // #[rtsan_standalone::nonblocking]
+    #[cfg_attr(feature = "rtsan", rtsan_standalone::nonblocking)]
     pub fn try_send(&mut self, message: &[u8]) -> Result<(), SendError> {
         if message.is_empty() {
             return Err(SendError::ZeroBytes);
@@ -132,7 +136,7 @@ impl Publisher {
         debug!(
             "Send on {} with {} subscribers",
             self.topic,
-            self.connections.len()
+            self.connections.len(),
         );
         let mut connections_to_remove = heapless::Vec::<usize, 20>::new();
         for (i, (con, lost_msg)) in self.connections.iter_mut().enumerate() {

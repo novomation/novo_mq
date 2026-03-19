@@ -41,3 +41,8 @@ rx.join().unwrap();
 ```bash
  bash run_in_cgroup.sh cargo rbench
 ```
+
+## RTSan
+```bash
+RTSAN_OPTIONS=suppressions=suppressions.supp RTSAN_ENABLE=1 cargo test  test_nonblocking --features rtsan
+```

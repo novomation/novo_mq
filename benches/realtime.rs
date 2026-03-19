@@ -5,13 +5,12 @@ use linux_rt::{
 };
 use log::{debug, info};
 use plotly::{Layout, Plot, Scatter, common::Mode, layout::Axis};
-use rt_datalayer::{datalayer::Datalayer, publisher::Publisher, subscriber::Subscriber};
+use rt_datalayer::{datalayer::Datalayer, subscriber::Subscriber};
 use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    thread::{self, JoinHandle},
     time::Duration,
 };
 const SAMPLE: usize = 20_000;
