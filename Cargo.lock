@@ -625,6 +625,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "novomq"
+version = "0.3.0"
+dependencies = [
+ "base64",
+ "heapless",
+ "linux-rt",
+ "log",
+ "nix",
+ "plotly",
+ "rtsan-standalone",
+ "simple_logger",
+ "test-log",
+ "thiserror",
+ "uuid",
+ "waitfree-sync",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -816,24 +834,6 @@ name = "regex-syntax"
 version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
-
-[[package]]
-name = "rt-datalayer"
-version = "0.2.0"
-dependencies = [
- "base64",
- "heapless",
- "linux-rt",
- "log",
- "nix",
- "plotly",
- "rtsan-standalone",
- "simple_logger",
- "test-log",
- "thiserror",
- "uuid",
- "waitfree-sync",
-]
 
 [[package]]
 name = "rtsan-standalone"

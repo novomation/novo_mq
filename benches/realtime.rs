@@ -4,8 +4,8 @@ use linux_rt::{
     sched::{Pid, set_affinity, set_fifo},
 };
 use log::{debug, info};
+use novomq::{datalayer::Datalayer, subscriber::Subscriber};
 use plotly::{Layout, Plot, Scatter, common::Mode, layout::Axis};
-use rt_datalayer::{datalayer::Datalayer, subscriber::Subscriber};
 use std::{
     sync::{
         Arc,

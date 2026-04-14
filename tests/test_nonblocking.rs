@@ -1,4 +1,4 @@
-use rt_datalayer::datalayer::Datalayer;
+use novomq::datalayer::Datalayer;
 
 #[test]
 fn test_nonblocking() {

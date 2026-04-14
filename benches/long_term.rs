@@ -5,7 +5,7 @@ use linux_rt::{
     sched::{Pid, set_affinity, set_fifo},
 };
 use log::{debug, info, warn};
-use rt_datalayer::{datalayer::Datalayer, subscriber::Subscriber};
+use novomq::{datalayer::Datalayer, subscriber::Subscriber};
 use std::{
     sync::{
         Arc,

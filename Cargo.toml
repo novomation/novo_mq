@@ -1,9 +1,9 @@
 [package]
-name = "rt-datalayer"
-version = "0.2.0"
+name = "novomq"
+version = "0.3.0"
 edition = "2024"
 authors = ["Marc Fischer <marcfir@proton.me>"]
-description = "Real-time datalyer for IPC"
+description = "Simple real-time messaging "
 keywords = ["ipc", "linux", "rt", "real-time"]
 
 
