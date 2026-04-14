@@ -124,7 +124,6 @@ impl Publisher {
         info!("Waited and now there are {number_of_subscribers} subscribers");
     }
 
-    // #[rtsan_standalone::nonblocking]
     #[cfg_attr(feature = "rtsan", rtsan_standalone::nonblocking)]
     pub fn try_send(&mut self, message: &[u8]) -> Result<(), SendError> {
         if message.is_empty() {
