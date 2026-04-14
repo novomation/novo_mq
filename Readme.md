@@ -1,9 +1,11 @@
-# rt-datalayer
+# NovoMQ - Simple real-time messaging 
 
-This is a minimalist, real-time-capable data layer. The publish/subscribe pattern is currently supported.
-We open a datalayer domain by creating a folder. The endpoints then create sockets inside this folder and connect to them.
-The connection between the endpoints is automatically managed in the background.
+NovoMQ is a minimalistic, real-time-capable messaging solution designed for inter-process communication (IPC) scenarios.
+The publish/subscribe pattern is currently supported. The idea behind NovoMQ is to prioritise IPC and leverage many operating system (OS) features to streamline management.
 
+For communication, a domain is opened within which publishers and subscribers are accessible to all participants.
+Publishers and subscribers are organized into hierarchical topics, and only absolute topic paths are supported.
+Subscribers can connect to only one topic, and filtering and wildcards for topic paths are not supported.
 
 ## Use
 
@@ -12,7 +14,7 @@ The connection between the endpoints is automatically managed in the background.
 rt-datalayer = { version = "0.1.0", git = "ssh://git@github.com/novomation/rt-datalayer.git" }
 ```
 
-## Example
+## Rust example
 
 ```rust
 let tx = std::thread::spawn(|| {
@@ -37,12 +39,3 @@ tx.join().unwrap();
 rx.join().unwrap();
 ```
 
-## Run Bench in Real-Time CGroup
-```bash
- bash run_in_cgroup.sh cargo rbench
-```
-
-## RTSan
-```bash
-RTSAN_OPTIONS=suppressions=suppressions.supp RTSAN_ENABLE=1 cargo test  test_nonblocking --features rtsan
-```
