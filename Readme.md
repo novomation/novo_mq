@@ -1,5 +1,9 @@
 # NovoMQ - Simple real-time messaging 
 
+[![CI](https://github.com/novomation/novo_mq/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/novomation/novo_mq/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT_OR_Apache--2.0-blue.svg)](
+https://github.com/novomation/novo_mq#license)
+
 NovoMQ is a minimalistic, real-time-capable messaging solution designed for inter-process communication (IPC) scenarios.
 The publish/subscribe pattern is currently supported. The idea behind NovoMQ is to prioritise IPC and leverage many operating system (OS) features to streamline management.
 
