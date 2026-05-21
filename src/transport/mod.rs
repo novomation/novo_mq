@@ -1,4 +1,5 @@
 use thiserror::Error;
+#[cfg(target_family = "unix")]
 pub mod uds;
 
 #[derive(Error, Debug, PartialEq)]
@@ -31,26 +32,15 @@ pub enum SendError {
     ZeroBytes,
 }
 
-/// A `ManagedTransport` splits the transport into the managing calls and the messaging call and makes the transport shareable between threads.
-pub trait ManagedTransport<M, S>
-where
-    M: TransportManaging + Sized,
-    S: TransportMessaging + Sized,
-{
-    fn into_managed(self) -> (M, S);
+pub trait TransportListener<T> {
+    fn accept(&mut self) -> Result<T, TransportError>
+    where
+        T: TransportConnection;
 }
-pub trait TransportManaging {
-    fn bind(&mut self, addr: &str) -> Result<(), TransportError>;
-    fn connect(&mut self, addr: &str) -> Result<(), TransportError>;
-    fn accept(&mut self) -> Result<impl TransportMessaging + 'static, TransportError>;
-    // fn addr(&self) -> Option<String>;
-}
-pub trait TransportMessaging {
-    fn addr(&self) -> Option<String>;
+
+pub trait TransportConnection {
+    /// Returns the address of this socket.
+    fn local_addr(&self) -> Option<String>;
     fn send(&self, msg: &[u8]) -> Result<usize, SendError>;
     fn recv(&self, recv_buffer: &mut [u8]) -> Result<usize, ReceiveError>;
-    // fn recv_blocking(&self, recv_buffer: &mut [u8]) -> Result<usize, ReceiveError>;
-
-    // fn recvfrom(&self, recv_buffer: &mut [u8]) -> Result<usize, ReceiveError>;
-    // fn raw_fd(&self) -> i32;
 }

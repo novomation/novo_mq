@@ -2,11 +2,9 @@ use crate::{
     cancelation::CancelationToken,
     helpers::set_calling_thread_to_nrt,
     topic::socket_path,
-    transport::{
-        self, ManagedTransport, ReceiveError, TransportError, TransportManaging, TransportMessaging,
-    },
+    transport::{ReceiveError, TransportConnection, TransportError, uds::UnixDatagram},
 };
-use log::{debug, error, info, trace, warn};
+use log::{debug, info, trace, warn};
 use nix::errno::Errno;
 use std::{
     fmt::Debug,
@@ -22,9 +20,8 @@ use waitfree_sync::spsc;
 pub struct Subscriber {
     _cancel_token: CancelationToken, // Unused because we only need this to be dropped
     has_connection: Arc<AtomicBool>,
-    has_error: Arc<AtomicBool>,
-    socket: Option<Box<dyn TransportMessaging + Send>>,
-    rx_new_socket: spsc::Receiver<Box<dyn TransportMessaging + Send>>,
+    socket: Option<Box<dyn TransportConnection + Send>>,
+    rx_new_socket: spsc::Receiver<Box<dyn TransportConnection + Send>>,
     topic: String,
 }
 
@@ -35,39 +32,26 @@ impl Subscriber {
     ) -> Result<Self, TransportError> {
         let cancel_token = CancelationToken::new();
         let has_connection: Arc<AtomicBool> = Arc::new(false.into());
-        let has_error: Arc<AtomicBool> = Arc::new(false.into());
         let publ_path = socket_path(domain, &topic);
 
         let (mut tx_new_socket, rx_new_socket) =
-            spsc::spsc::<Box<dyn TransportMessaging + Send>>(64);
+            spsc::spsc::<Box<dyn TransportConnection + Send>>(64);
 
         std::thread::spawn({
             let cancel_token = cancel_token.clone();
             let has_connection = has_connection.clone();
-            let has_error = has_error.clone();
             let topic = topic.as_ref().to_string();
             move || {
                 set_calling_thread_to_nrt();
                 debug!("Start subscriber `{topic}` mgmt thread and try to connect");
                 while !cancel_token.is_cancelled() {
                     if !has_connection.load(Ordering::Acquire) {
-                        // info!("Try to connect subscriber to `{topic}`");
-                        let transport = match transport::uds::Uds::new() {
-                            Ok(transport) => transport,
-                            Err(err) => {
-                                error!("Could not create subscriber socket {err}");
-                                has_error.store(true, Ordering::Relaxed);
-                                return Err(err);
-                            }
-                        };
-                        let (mut uds, uds_tx) = transport.into_managed();
-                        match uds.connect(&publ_path) {
-                            Ok(_) => {
+                        match UnixDatagram::connect(&publ_path) {
+                            Ok(connection) => {
                                 has_connection.store(true, Ordering::Release);
-                                let _ =
-                                    tx_new_socket.try_send(Box::new(uds_tx)).inspect_err(|_| {
-                                        warn!("Could not save subscriber socket -> Try again")
-                                    });
+                                let _ = tx_new_socket.try_send(Box::new(connection)).inspect_err(
+                                    |_| warn!("Could not save subscriber socket -> Try again"),
+                                );
                                 info!("Now connected to {topic}");
                             }
                             Err(TransportError(Errno::ENOENT)) => (),
@@ -80,13 +64,12 @@ impl Subscriber {
                         std::thread::sleep(Duration::from_secs(1));
                     }
                 }
-                Ok(())
+                // Ok(())
             }
         });
         Ok(Self {
             _cancel_token: cancel_token,
             has_connection,
-            has_error,
             socket: None,
             rx_new_socket,
             topic: topic.as_ref().to_string(),
@@ -140,14 +123,14 @@ impl Drop for Subscriber {
     fn drop(&mut self) {
         trace!(
             "Subscriber {:?} was dropped",
-            self.socket.as_ref().map(|s| s.addr())
+            self.socket.as_ref().map(|s| s.local_addr())
         );
     }
 }
 impl Debug for Subscriber {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let socket_str = match &self.socket {
-            Some(s) => match s.addr() {
+            Some(s) => match s.local_addr() {
                 Some(addr) => addr,
                 None => "?".to_string(),
             },
@@ -156,7 +139,6 @@ impl Debug for Subscriber {
         f.debug_struct("Subscriber")
             // .field("_cancel_token", &self._cancel_token)
             .field("has_connection", &self.has_connection)
-            .field("has_error", &self.has_error)
             .field("socket", &socket_str)
             // .field("rx_new_socket", &self.rx_new_socket)
             .field("topic", &self.topic)

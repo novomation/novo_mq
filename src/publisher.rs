@@ -3,7 +3,8 @@ use crate::{
     helpers::set_calling_thread_to_nrt,
     topic::socket_path,
     transport::{
-        self, ManagedTransport, SendError, TransportError, TransportManaging, TransportMessaging,
+        SendError, TransportConnection, TransportError, TransportListener,
+        uds::{UnixDatagram, UnixDatagramListener},
     },
 };
 use log::{debug, error, info};
@@ -22,8 +23,8 @@ use std::{
 use waitfree_sync::spsc;
 
 pub struct Publisher {
-    connections: Vec<(Box<dyn TransportMessaging + Send>, usize)>,
-    rx_connection: spsc::Receiver<Box<dyn TransportMessaging + Send>>,
+    connections: Vec<(UnixDatagram, usize)>,
+    rx_connection: spsc::Receiver<UnixDatagram>,
     cancel_token: CancelationToken,
     number_of_subscribers: Arc<AtomicUsize>,
 
@@ -37,16 +38,13 @@ impl Publisher {
         topic: impl AsRef<str>,
     ) -> Result<Self, TransportError> {
         // Create publisher socket
-        let (mut uds, _) = transport::uds::Uds::new()
-            .inspect_err(|err| error!("Could not create uds {err}"))?
-            .into_managed();
-        let number_of_subscribers = Arc::new(AtomicUsize::new(0));
 
+        let number_of_subscribers = Arc::new(AtomicUsize::new(0));
         let socket_addr = socket_path(domain, &topic);
-        uds.bind(&socket_addr)
+        let mut listener = UnixDatagramListener::bind(&socket_addr)
             .inspect_err(|err| error!("Could not bind {err}"))?;
-        let (mut tx_connection, rx_connection) =
-            spsc::spsc::<Box<dyn TransportMessaging + Send>>(64);
+
+        let (mut tx_connection, rx_connection) = spsc::spsc::<UnixDatagram>(64);
         let cancel_token = CancelationToken::new();
 
         let condvar = Arc::new((Mutex::new(usize::MAX), Condvar::new()));
@@ -63,14 +61,14 @@ impl Publisher {
                 }
                 condvar.1.notify_one();
                 while !cancel_token.is_cancelled() {
-                    let res = uds.accept().inspect_err(|err| match err {
-                        TransportError(Errno::EAGAIN) => (), // We ignore eagain. It's not an error. It just signals that nothing happend in non blocking mode.
-                        TransportError(_) => error!("Error in accept: {err}"),
-                    });
+                    let res = listener
+                        .accept()
+                        .inspect_err(|err| error!("Error in accept: {err}"));
                     if let Ok(connection) = res {
                         info!("Got new subscriber for `{topic}`");
+
                         let _ = tx_connection
-                            .try_send(Box::new(connection))
+                            .try_send(connection)
                             .inspect_err(|_| error!("Could not register subscriber: Queue full"));
                         number_of_subscribers.fetch_add(1, Ordering::AcqRel);
 
@@ -196,13 +194,13 @@ mod test {
 
         publ.try_send("message".as_bytes()).unwrap();
 
-        let (mut test_sub, sub) = transport::uds::Uds::new().unwrap().into_managed();
-        test_sub.connect(encode(&publ.topic).as_str()).unwrap();
+        let sub = UnixDatagram::connect(encode(&publ.topic).as_str()).unwrap();
+
         publ.wait_for_subscribers(1);
         publ.try_send("message".as_bytes()).unwrap();
 
         drop(sub);
-        drop(test_sub);
+
         publ.wait_for_subscribers(1);
 
         publ.try_send("iufvghj".as_bytes()).unwrap();
