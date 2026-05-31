@@ -1,15 +1,30 @@
 use thiserror::Error;
 #[cfg(target_family = "unix")]
 pub mod uds;
+#[cfg(target_family = "windows")]
+pub mod win;
+pub use win as uds;
+
+#[cfg(target_family = "unix")]
+pub type OsError = nix::Error;
+#[cfg(target_family = "windows")]
+pub type OsError = win::WindowsSocketError;
 
 #[derive(Error, Debug, PartialEq)]
-#[error("System Error {0}")]
-pub struct TransportError(#[from] pub nix::Error);
+
+pub enum TransportError {
+    #[error("Peer does not exist")]
+    PeerDoesNotExist,
+    #[error("Blocking operation is still pending")]
+    WouldBlock,
+    #[error("TransportError {0}")]
+    Os(#[from] OsError),
+}
 
 #[derive(Error, Debug, PartialEq)]
 pub enum ReceiveError {
     #[error("System Error {0}")]
-    OsError(#[from] nix::Error),
+    OsError(#[from] OsError),
     #[error("No Message")]
     NoMessageAvailable,
     #[error("The publisher has disconnected. We are trying to establish a new connection.")]
@@ -26,8 +41,12 @@ pub enum ReceiveError {
 
 #[derive(Error, Debug, PartialEq)]
 pub enum SendError {
+    #[error("Buffer of der underlying OS full")]
+    OsBufferFull,
+    #[error("ConnectionEnded")]
+    ConnectionEnded,
     #[error("System Error {0}")]
-    OsError(#[from] nix::Error),
+    OsError(#[from] OsError),
     #[error("Sending zero bytes is not allowed")]
     ZeroBytes,
 }

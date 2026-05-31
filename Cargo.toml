@@ -16,16 +16,24 @@ categories = ["network-programming"]
 base64 = "0.22"
 heapless = "0.9"
 log = "0.4"
-nix = { version = "0.31", features = ["socket", "fs", "uio"] }
 thiserror = "2.0"
 uuid = { version = "1", features = ["v4"] }
 waitfree-sync = "0.3"
-linux-rt = { version = "0.3.2", git = "https://github.com/marcfir/linux-rt", tag = "v0.3.2" }
 rtsan-standalone = { version = "0.3.0", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["socket", "fs", "uio"] }
+linux-rt = { version = "0.3.2", git = "https://github.com/marcfir/linux-rt", tag = "v0.3.2" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinSock",
+] }
 
 [dev-dependencies]
 test-log = "0.2"
-linux-rt = { version = "0.3.2", git = "https://github.com/marcfir/linux-rt", tag = "v0.3.2" }
+# linux-rt = { version = "0.3.2", git = "https://github.com/marcfir/linux-rt", tag = "v0.3.2" }
 plotly = "0.14"
 simple_logger = "5.2"
 

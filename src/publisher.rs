@@ -8,8 +8,6 @@ use crate::{
     },
 };
 use log::{debug, error, info};
-use nix::errno::Errno;
-
 use std::{
     fmt::Debug,
     path::Path,
@@ -61,24 +59,29 @@ impl Publisher {
                 }
                 condvar.1.notify_one();
                 while !cancel_token.is_cancelled() {
-                    let res = listener
-                        .accept()
-                        .inspect_err(|err| error!("Error in accept: {err}"));
-                    if let Ok(connection) = res {
-                        info!("Got new subscriber for `{topic}`");
+                    let res = listener.accept();
+                    match res {
+                        Ok(connection) => {
+                            info!("Got new subscriber for `{topic}`");
 
-                        let _ = tx_connection
-                            .try_send(connection)
-                            .inspect_err(|_| error!("Could not register subscriber: Queue full"));
-                        number_of_subscribers.fetch_add(1, Ordering::AcqRel);
+                            let _ = tx_connection.try_send(connection).inspect_err(|_| {
+                                error!("Could not register subscriber: Queue full")
+                            });
+                            number_of_subscribers.fetch_add(1, Ordering::AcqRel);
 
-                        let (lock, cvar) = &*condvar;
-                        if let Ok(mut started) = lock.lock() {
-                            *started = number_of_subscribers.load(Ordering::Acquire);
-                            // We notify the condvar that the value has changed.
-                            cvar.notify_one();
+                            let (lock, cvar) = &*condvar;
+                            if let Ok(mut started) = lock.lock() {
+                                *started = number_of_subscribers.load(Ordering::Acquire);
+                                // We notify the condvar that the value has changed.
+                                cvar.notify_one();
+                            }
                         }
+                        Err(TransportError::WouldBlock) => {
+                            // Ignorw
+                        }
+                        Err(err) => error!("Error in accept: {err}"),
                     }
+
                     std::thread::sleep(Duration::from_millis(200));
                 }
             }
@@ -139,11 +142,14 @@ impl Publisher {
         for (i, (con, lost_msg)) in self.connections.iter_mut().enumerate() {
             match con.send(message) {
                 Ok(_) => (),
-                Err(SendError::OsError(Errno::EAGAIN)) => {
+                Err(SendError::OsBufferFull) => {
                     *lost_msg += 1;
                 }
-                Err(SendError::OsError(Errno::ECONNRESET))
-                | Err(SendError::OsError(Errno::EPIPE)) => {
+                // Err(SendError::OsError(Errno::ECONNRESET))
+                // | Err(SendError::OsError(Errno::EPIPE)) => {
+                //     let _ = connections_to_remove.push(i);
+                // }
+                Err(SendError::ConnectionEnded) => {
                     let _ = connections_to_remove.push(i);
                 }
                 Err(err) => {

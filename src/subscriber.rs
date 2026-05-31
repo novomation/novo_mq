@@ -5,7 +5,6 @@ use crate::{
     transport::{ReceiveError, TransportConnection, TransportError, uds::UnixDatagram},
 };
 use log::{debug, info, trace, warn};
-use nix::errno::Errno;
 use std::{
     fmt::Debug,
     path::Path,
@@ -54,7 +53,7 @@ impl Subscriber {
                                 );
                                 info!("Now connected to {topic}");
                             }
-                            Err(TransportError(Errno::ENOENT)) => (),
+                            Err(TransportError::PeerDoesNotExist) => (),
                             Err(err) => {
                                 debug!("Could not connect {err}");
                             }

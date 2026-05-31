@@ -1,6 +1,5 @@
 use crate::{publisher::Publisher, subscriber::Subscriber, transport::TransportError};
-use linux_rt::CpuSet;
-use log::warn;
+use log::{debug, warn};
 use std::path::{Path, PathBuf};
 
 pub struct Datalayer {
@@ -11,21 +10,6 @@ impl Datalayer {
     pub fn open(domain: impl AsRef<Path>) -> Result<Self, std::io::Error> {
         std::fs::create_dir_all(&domain)?;
 
-        Ok(Self {
-            domain_path: domain.as_ref().to_path_buf(),
-        })
-    }
-
-    /// Opens a new datalayer. You can have multiple datalayers. So we have to define the domain. This is basically a file system path
-    pub fn open_with_custom_affinity(
-        domain: impl AsRef<Path>,
-        cores: &[usize],
-    ) -> Result<Self, std::io::Error> {
-        std::fs::create_dir_all(&domain)?;
-        let mut managment_affinity = CpuSet::empty();
-        for core in cores {
-            managment_affinity = managment_affinity.set(*core);
-        }
         Ok(Self {
             domain_path: domain.as_ref().to_path_buf(),
         })
@@ -42,6 +26,7 @@ impl Datalayer {
 
 impl Drop for Datalayer {
     fn drop(&mut self) {
+        debug!("Try remove {:?}", self.domain_path);
         // Try to remove directory only if it's empty
         match std::fs::remove_dir(&self.domain_path) {
             Ok(_) => (),
@@ -61,6 +46,7 @@ impl Drop for Datalayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_log::test;
 
     #[test]
     fn it_works() {
