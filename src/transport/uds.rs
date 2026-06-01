@@ -12,6 +12,17 @@ use std::{
     path::Path,
 };
 
+pub fn set_nonblock(fd: nix::libc::c_int) -> Result<(), nix::errno::Errno> {
+    unsafe {
+        let flags = nix::libc::fcntl(fd, nix::libc::F_GETFL);
+        let ret = nix::libc::fcntl(fd, nix::libc::F_SETFL, flags | nix::libc::O_NONBLOCK);
+        match ret {
+            -1 => Err(nix::errno::Errno::last()),
+            _ => Ok(()),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct UnixDatagramListener {
     socket: OwnedFd,
@@ -28,10 +39,10 @@ impl UnixDatagramListener {
         let fd = socket::socket(
             AddressFamily::Unix,
             SockType::SeqPacket,
-            SockFlag::SOCK_NONBLOCK,
+            SockFlag::empty(),
             None,
         )?;
-
+        set_nonblock(fd.as_raw_fd())?;
         let unix_addr = UnixAddr::new(addr)?;
         if Path::new(addr).exists() {
             // We ignore errors. This may happen when drop and so on is not in sync
@@ -81,9 +92,10 @@ impl UnixDatagram {
         let fd = socket::socket(
             AddressFamily::Unix,
             SockType::SeqPacket,
-            SockFlag::SOCK_NONBLOCK,
+            SockFlag::empty(),
             None,
         )?;
+        set_nonblock(fd.as_raw_fd())?;
         let unix_addr = UnixAddr::new(addr)?;
 
         let ret = socket::connect(fd.as_raw_fd(), &unix_addr);
