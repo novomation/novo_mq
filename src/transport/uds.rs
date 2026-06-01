@@ -38,7 +38,10 @@ impl UnixDatagramListener {
         // There should be only ENOMEM ENOBUFS  EMFILE ENFILE EACCES
         let fd = socket::socket(
             AddressFamily::Unix,
+            #[cfg(target_os = "linux")]
             SockType::SeqPacket,
+            #[cfg(target_os = "macos")]
+            SockType::Stream,
             SockFlag::empty(),
             None,
         )?;
@@ -91,7 +94,10 @@ impl UnixDatagram {
     pub fn connect(addr: &str) -> Result<Self, TransportError> {
         let fd = socket::socket(
             AddressFamily::Unix,
+            #[cfg(target_os = "linux")]
             SockType::SeqPacket,
+            #[cfg(target_os = "macos")]
+            SockType::Stream,
             SockFlag::empty(),
             None,
         )?;
