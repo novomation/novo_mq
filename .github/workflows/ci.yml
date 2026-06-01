@@ -17,6 +17,7 @@ env:
 defaults:
   run:
     shell: bash
+  
 
 jobs:
   # Check formatting
@@ -48,6 +49,7 @@ jobs:
   # Rtsan
   rtsan:
     name: Real time check
+    timeout-minutes: 4
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -61,6 +63,7 @@ jobs:
   # Stable
   unittest:
     name: unittest
+    timeout-minutes: 4
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
