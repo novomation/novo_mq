@@ -1,7 +1,7 @@
 use crate::{
     ReceiveError, SendError,
     transport::{
-        TransportConnection, TransportError, TransportListener,
+        MAX_CONNECTIONS, TransportConnection, TransportError, TransportListener,
         win::{WindowsSocketError, WinsockError},
     },
 };
@@ -161,7 +161,7 @@ impl UnixDatagramListener {
         };
         return_to_result(ret)?;
         log::info!("Bound to {addr}");
-        let ret = unsafe { listen(fd, 200) };
+        let ret = unsafe { listen(fd, MAX_CONNECTIONS) };
         return_to_result(ret)?;
 
         Ok(UnixDatagramListener {

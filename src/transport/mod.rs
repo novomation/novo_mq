@@ -11,6 +11,8 @@ pub type OsError = nix::Error;
 #[cfg(target_family = "windows")]
 pub type OsError = win::WindowsSocketError;
 
+pub const MAX_CONNECTIONS: i32 = 25;
+
 #[derive(Error, Debug, PartialEq)]
 
 pub enum TransportError {

@@ -1,6 +1,6 @@
 use crate::{
     ReceiveError, SendError,
-    transport::{TransportConnection, TransportError, TransportListener},
+    transport::{MAX_CONNECTIONS, TransportConnection, TransportError, TransportListener},
 };
 use nix::{
     errno::Errno::{EAGAIN, ECONNRESET, ENOENT},
@@ -50,7 +50,7 @@ impl UnixDatagramListener {
         }
         socket::bind(fd.as_raw_fd(), &unix_addr)?;
         log::info!("Bound to {addr}");
-        socket::listen(&fd, Backlog::MAXALLOWABLE)?;
+        socket::listen(&fd, Backlog::new(MAX_CONNECTIONS)?)?;
 
         Ok(UnixDatagramListener {
             socket: fd,
