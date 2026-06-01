@@ -53,7 +53,10 @@ impl Publisher {
             let number_of_subscribers = number_of_subscribers.clone();
             move || {
                 set_calling_thread_to_nrt();
-                debug!("Start publisher `{topic}` mgmt thread and waiting for subscribers");
+                debug!(
+                    "Start mgmt thread for publisher `{topic}` ({}) and waiting for subscribers",
+                    listener.local_addr().unwrap_or_default()
+                );
                 if let Ok(mut c) = condvar.0.lock() {
                     *c = 0;
                 }

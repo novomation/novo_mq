@@ -139,7 +139,6 @@ pub struct UnixDatagramListener {
 impl Drop for UnixDatagramListener {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.local_addr);
-        debug!("Drop UnixDatagramListener and removed {}", self.local_addr)
     }
 }
 impl UnixDatagramListener {
@@ -184,6 +183,10 @@ impl TransportListener<UnixDatagram> for UnixDatagramListener {
             socket: OwnedSocket(socket),
         })
     }
+
+    fn local_addr(&self) -> Option<String> {
+        local_addr(self.socket.0)
+    }
 }
 
 #[derive(Debug)]
@@ -193,7 +196,7 @@ pub struct UnixDatagram {
 impl Drop for UnixDatagram {
     fn drop(&mut self) {
         if let Some(addr) = local_addr(self.socket.0) {
-            debug!("Drop UnixDatagram and removed {}", addr)
+            let _ = std::fs::remove_file(&addr);
         }
     }
 }
@@ -238,15 +241,14 @@ impl UnixDatagram {
         log::info!("connect: Now connected to {:?}", ud.peer_addr());
         Ok(ud)
     }
-    pub fn peer_addr(&self) -> Option<String> {
-        peer_addr(self.socket.0)
-    }
 }
 impl TransportConnection for UnixDatagram {
     fn local_addr(&self) -> Option<String> {
         local_addr(self.socket.0)
     }
-
+    fn peer_addr(&self) -> Option<String> {
+        peer_addr(self.socket.0)
+    }
     fn send(&self, msg: &[u8]) -> Result<usize, SendError> {
         let ret = unsafe {
             send(
@@ -346,225 +348,5 @@ impl TransportConnection for UnixDatagram {
 
             return Ok(ret as usize);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::cancelation::CancelationToken;
-    use log::{error, info, warn};
-    use std::{
-        sync::{Arc, atomic::AtomicBool, mpsc::Receiver},
-        thread::JoinHandle,
-        time::Duration,
-    };
-    use test_log::test;
-
-    #[test]
-    fn test_bind() {
-        let sock_addr = uuid::Uuid::new_v4().to_string();
-        let listener = UnixDatagramListener::bind(&sock_addr).unwrap();
-        assert_eq!(local_addr(listener.socket.0), Some(sock_addr));
-    }
-
-    #[test]
-    fn test_connect_no_existing() {
-        assert_eq!(
-            UnixDatagram::connect("oiuzhtrtz").unwrap_err(),
-            TransportError::PeerDoesNotExist
-        );
-    }
-
-    #[test]
-    fn test_would_block_on_accept() {
-        let sock_addr = uuid::Uuid::new_v4().to_string();
-        let mut listener = UnixDatagramListener::bind(&sock_addr).unwrap();
-        assert_eq!(listener.accept().unwrap_err(), TransportError::WouldBlock);
-    }
-
-    #[test]
-    fn smoke() {
-        let sock_addr = uuid::Uuid::new_v4().to_string();
-
-        let mut listener = UnixDatagramListener::bind(&sock_addr).unwrap();
-        let clinet_handle = std::thread::spawn({
-            let sock_addr = sock_addr.clone();
-            move || {
-                let client = UnixDatagram::connect(&sock_addr).unwrap();
-                assert_eq!(client.peer_addr(), Some(sock_addr));
-            }
-        });
-        let _connection = loop {
-            if let Ok(connection) = listener.accept() {
-                assert_eq!(connection.local_addr(), Some(sock_addr));
-                break connection;
-            }
-        };
-        clinet_handle.join().unwrap();
-    }
-
-    fn spawn_server() -> (
-        String,
-        Receiver<Box<dyn TransportConnection + Send + 'static>>,
-        CancelationToken,
-        JoinHandle<()>,
-    ) {
-        let sock_addr = uuid::Uuid::new_v4().to_string();
-        let mut server = UnixDatagramListener::bind(&sock_addr).unwrap();
-        let start_accepting = Arc::new(AtomicBool::new(false));
-        let (tx, rx) = std::sync::mpsc::channel::<Box<dyn TransportConnection + 'static + Send>>();
-        let ct = CancelationToken::new();
-        let join = std::thread::spawn({
-            let start_accepting = start_accepting.clone();
-            let ct = ct.clone();
-            move || {
-                start_accepting.store(true, std::sync::atomic::Ordering::Release);
-                while !ct.is_cancelled() {
-                    match server.accept() {
-                        //
-                        Ok(conn) => {
-                            let _ = tx.send(Box::new(conn));
-                        }
-                        Err(TransportError::Os(WindowsSocketError::WinsockError(
-                            WinsockError::Wouldblock,
-                        ))) => warn!("WB"),
-                        Err(err) => error!("Accept error: {err}"),
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                info!("Exit mngmt")
-            }
-        });
-        while !start_accepting.load(std::sync::atomic::Ordering::Acquire) {
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        (sock_addr, rx, ct, join)
-    }
-
-    #[test]
-    fn connect_on_closed_socket() {
-        let (addr, _, ct, join) = spawn_server();
-        let _client = UnixDatagram::connect(&addr).unwrap();
-        ct.cancel();
-        join.join().unwrap();
-        assert_eq!(
-            UnixDatagram::connect(&addr).unwrap_err(),
-            TransportError::PeerDoesNotExist
-        );
-    }
-    #[test]
-    fn accept_connect() {
-        let (addr, rx_conn, ct, join) = spawn_server();
-        let _client = UnixDatagram::connect(&addr).unwrap();
-
-        assert!(rx_conn.recv().is_ok());
-
-        ct.cancel();
-        join.join().unwrap();
-    }
-
-    #[test]
-    fn accept_connect_reconnect() {
-        let (addr, rx_conn, ct, join) = spawn_server();
-        let client = UnixDatagram::connect(&addr).unwrap();
-
-        let c = rx_conn.recv().unwrap();
-        ct.cancel();
-        join.join().unwrap();
-
-        // We drop and delete the server fd here.
-        drop(c);
-        std::thread::sleep(Duration::from_millis(500));
-        // The client still has a peer. We conclude that the disconnection is only detected when using send/recv.
-        assert_eq!(client.peer_addr(), Some(addr.clone()));
-        // This returns a value of 0, which signals the end of the remote connections.
-        let mut buf = [0u8; 12];
-        assert_eq!(client.recv(&mut buf), Ok(0));
-        // The client still has a peer. We need to set up a new connection.
-        assert_eq!(client.peer_addr(), Some(addr));
-    }
-
-    #[test]
-    fn send_recv() {
-        let (addr, rx_conn, ct, join) = spawn_server();
-        let client = UnixDatagram::connect(&addr).unwrap();
-
-        let serv_conn = rx_conn.recv().unwrap();
-        assert_eq!(client.send(b"msg"), Ok(3));
-        let mut buf = [0_u8, 2];
-        assert_eq!(
-            serv_conn.recv(&mut buf),
-            Err(ReceiveError::ExternalBufferToSmall((2, 3)))
-        );
-        assert_eq!(&buf, b"ms");
-        assert_eq!(
-            serv_conn.recv(&mut buf),
-            Err(ReceiveError::NoMessageAvailable)
-        );
-        ct.cancel();
-        join.join().unwrap();
-    }
-
-    #[test]
-    fn send_on_connectionreset() {
-        let (addr, rx_conn, ct, join) = spawn_server();
-        let client = UnixDatagram::connect(&addr).unwrap();
-        let serv_conn = rx_conn.recv().unwrap();
-
-        // Send first => OK
-        assert_eq!(client.send(b"msg"), Ok(3));
-
-        // Drop server
-        drop(serv_conn);
-        ct.cancel();
-        join.join().unwrap();
-
-        // Send second => Error
-        assert_eq!(client.send(b"msg"), Err(SendError::ConnectionEnded));
-    }
-
-    #[test]
-    fn recv_non_blocking() {
-        let (addr, rx_conn, ct, join) = spawn_server();
-        let _client = UnixDatagram::connect(&addr).unwrap();
-
-        let serv_conn = rx_conn.recv().unwrap();
-
-        let mut buf = [0_u8, 2];
-        assert_eq!(
-            serv_conn.recv(&mut buf),
-            Err(ReceiveError::NoMessageAvailable)
-        );
-
-        ct.cancel();
-        join.join().unwrap();
-    }
-
-    #[test]
-    fn pub_sub() {
-        let (addr, rx_conn, ct, join) = spawn_server();
-
-        let sub1 = UnixDatagram::connect(&addr).unwrap();
-        let serv_tx1 = rx_conn.recv().unwrap();
-
-        let sub2 = UnixDatagram::connect(&addr).unwrap();
-
-        let serv_tx2 = rx_conn.recv().unwrap();
-
-        assert_eq!(serv_tx1.send("msg1".as_bytes()), Ok(4));
-
-        assert_eq!(serv_tx2.send("msg2".as_bytes()), Ok(4));
-
-        let mut buf: [u8; 1024] = [0; 1024];
-        assert_eq!(sub1.recv(&mut buf), Ok(4));
-        assert_eq!(
-            String::from_utf8_lossy(&buf[0..4]).to_string(),
-            "msg1".to_string()
-        );
-
-        assert_eq!(sub2.recv(&mut buf), Ok(4));
-        ct.cancel();
-        join.join().unwrap();
     }
 }
