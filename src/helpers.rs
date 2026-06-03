@@ -1,10 +1,7 @@
-#[cfg(target_family = "unix")]
+use log::error;
+use rt_tunex::sched::{CpuSet, Pid, set_affinity, set_other};
+
 pub fn set_calling_thread_to_nrt() {
-    use linux_rt::{
-        CpuSet,
-        sched::{Pid, set_affinity, set_other},
-    };
-    use log::error;
     if let Some(allowed_cpus) = allowed_cpus() {
         let cpuset = CpuSet::from_bitmask(allowed_cpus);
         let _ = set_affinity(Pid::this(), cpuset.clone()).inspect_err(|err| {
@@ -34,8 +31,10 @@ fn allowed_cpus() -> Option<u64> {
     })
 }
 
-#[cfg(target_family = "windows")]
-pub fn set_calling_thread_to_nrt() {}
+#[cfg(target_os = "windows")]
+fn allowed_cpus() -> Option<u64> {
+    None
+}
 
 #[cfg(test)]
 mod tests {

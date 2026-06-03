@@ -1,11 +1,10 @@
-use linux_rt::{
-    CpuSet,
-    clock::{ClockId, get_time},
-    mman::{MmanFlags, mlockall},
-    sched::{Pid, set_affinity, set_fifo},
-};
 use log::{debug, info, warn};
 use novomq::{datalayer::Datalayer, subscriber::Subscriber};
+use rt_tunex::{
+    clock::{ClockId, get_time},
+    mman::{MmanFlags, mlockall},
+    sched::{CpuSet, Pid, set_affinity, set_fifo},
+};
 use std::{
     sync::{
         Arc,
@@ -37,9 +36,7 @@ impl Payload {
 }
 
 fn now() -> u64 {
-    get_time(ClockId::ClockMonotonicRaw)
-        .unwrap()
-        .as_nanoseconds() as u64
+    get_time(ClockId::ClockMonotonic).unwrap().as_nanoseconds() as u64
 }
 
 #[derive(Debug)]
@@ -123,7 +120,7 @@ fn main() {
             p.wait_for_subscribers(1);
             rx_bounded.store(true, Ordering::Relaxed);
 
-            set_affinity(Pid::this(), CpuSet::empty().set(2)).unwrap();
+            set_affinity(Pid::this(), CpuSet::empty().insert(2)).unwrap();
             set_fifo(Pid::this(), 95).unwrap();
 
             info!("TX ready");
@@ -152,7 +149,7 @@ fn main() {
         p.wait_until_connected();
 
         let mut buffer = [0u8; 1000];
-        set_affinity(Pid::this(), CpuSet::empty().set(3)).unwrap();
+        set_affinity(Pid::this(), CpuSet::empty().insert(3)).unwrap();
         set_fifo(Pid::this(), 95).unwrap();
 
         info!("RX ready");

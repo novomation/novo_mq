@@ -1,11 +1,10 @@
-use linux_rt::{
-    CpuSet,
-    clock::{ClockId, get_time},
-    sched::{Pid, set_affinity, set_fifo},
-};
 use log::{debug, info};
 use novomq::{datalayer::Datalayer, subscriber::Subscriber};
 use plotly::{Layout, Plot, Scatter, common::Mode, layout::Axis};
+use rt_tunex::{
+    clock::{ClockId, get_time},
+    sched::{CpuSet, Pid, set_affinity, set_fifo},
+};
 use std::{
     sync::{
         Arc,
@@ -37,12 +36,12 @@ fn main() {
             p.wait_for_subscribers(1);
             rx_bounded.store(true, Ordering::Relaxed);
 
-            set_affinity(Pid::this(), CpuSet::empty().set(2)).unwrap();
+            set_affinity(Pid::this(), CpuSet::empty().insert(2)).unwrap();
             set_fifo(Pid::this(), 95).unwrap();
 
             info!("TX ready");
             for i in 0..SAMPLE {
-                tx_times.push((i, get_time(ClockId::ClockMonotonicRaw).unwrap()));
+                tx_times.push((i, get_time(ClockId::ClockMonotonic).unwrap()));
                 p.try_send(&i.to_le_bytes()).unwrap();
                 std::thread::sleep(Duration::from_micros(CYCLETIME_US));
                 debug!("Send {i}th message");
@@ -60,7 +59,7 @@ fn main() {
         p.wait_until_connected();
 
         let mut buffer = [0u8; 1000];
-        set_affinity(Pid::this(), CpuSet::empty().set(3)).unwrap();
+        set_affinity(Pid::this(), CpuSet::empty().insert(3)).unwrap();
         set_fifo(Pid::this(), 95).unwrap();
 
         info!("RX ready");
@@ -69,7 +68,7 @@ fn main() {
         while count < SAMPLE {
             if let Ok((len, _)) = p.try_recv(&mut buffer) {
                 let i = usize::from_le_bytes(buffer[0..len].try_into().unwrap());
-                rx_times.push((i, get_time(ClockId::ClockMonotonicRaw).unwrap()));
+                rx_times.push((i, get_time(ClockId::ClockMonotonic).unwrap()));
                 count += 1;
                 // info!("Received new message. {i}/{count}.");
             }
@@ -118,7 +117,7 @@ pub fn run_nrt_load_in_background(
     cycletime_us: u64,
     stop_flag: Arc<AtomicBool>,
 ) {
-    let handels = (0..num_nrt_threads)
+    let _handels = (0..num_nrt_threads)
         .map(|i| {
             std::thread::spawn({
                 let stop_flag = stop_flag.clone();
@@ -134,7 +133,7 @@ pub fn run_nrt_load_in_background(
                     let mut buf = [0u8; 4];
                     let mut count = 0;
                     while !stop_flag.load(Ordering::Relaxed) {
-                        if let Ok((len, all)) = sub.try_recv(&mut buf) {
+                        if let Ok((_len, _all)) = sub.try_recv(&mut buf) {
                             count += 1;
                             // info!(
                             //     "sub[{i}] Got data {:?} dropped {} bytes",
