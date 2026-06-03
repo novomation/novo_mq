@@ -15,7 +15,7 @@ Subscribers can connect to only one topic, and filtering and wildcards for topic
 
 ```toml
 # Cargo.toml
-novomq = { version = "0.3.0", git = "ssh://git@github.com/novomation/novomq.git" }
+novomq = { version = "...", git = "ssh://git@github.com/novomation/novomq.git" }
 ```
 
 ## Rust example
