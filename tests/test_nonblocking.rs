@@ -1,7 +1,13 @@
 use novomq::datalayer::Datalayer;
 
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 #[test]
 fn test_nonblocking() {
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::new_heap();
     let tx = std::thread::spawn(|| {
         let dl = Datalayer::open("test_domain_nonblocking").unwrap();
         let mut pl = dl.publisher("my_topic").unwrap();

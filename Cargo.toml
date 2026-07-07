@@ -36,9 +36,11 @@ windows = { version = "0.62", features = [
 test-log = "0.2"
 plotly = "0.14"
 simple_logger = "5.2"
+dhat = { version = "0.3.3" }
 
 [features]
 rtsan = ["rtsan-standalone"]
+dhat-heap = []
 
 
 [[bench]]
