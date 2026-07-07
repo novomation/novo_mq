@@ -215,4 +215,14 @@ mod test {
         publ.try_send("iufvghj".as_bytes()).unwrap();
         publ.try_send("iufvghj".as_bytes()).unwrap();
     }
+
+    #[test]
+    fn test_publisher_on_same_topic() {
+        let _publ = Publisher::new("", "topic").unwrap();
+
+        assert_eq!(
+            Publisher::new("", "topic").unwrap_err(),
+            TransportError::AddressInUse
+        );
+    }
 }

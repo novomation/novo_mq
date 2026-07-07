@@ -3,13 +3,13 @@ use crate::{
     transport::{MAX_CONNECTIONS, TransportConnection, TransportError, TransportListener},
 };
 use nix::{
-    errno::Errno::{EAGAIN, ECONNRESET, ENOENT},
+    errno::Errno::{EAGAIN, EALREADY, ECONNREFUSED, ECONNRESET, EINPROGRESS, ENOENT},
     sys::socket::{self, AddressFamily, Backlog, MsgFlags, RecvMsg, SockFlag, SockType, UnixAddr},
+    sys::stat::{SFlag, lstat},
 };
 use std::{
     io::IoSliceMut,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
-    path::Path,
 };
 
 pub fn set_nonblock(fd: nix::libc::c_int) -> Result<(), nix::errno::Errno> {
@@ -20,6 +20,49 @@ pub fn set_nonblock(fd: nix::libc::c_int) -> Result<(), nix::errno::Errno> {
             -1 => Err(nix::errno::Errno::last()),
             _ => Ok(()),
         }
+    }
+}
+
+fn create_unix_socket() -> Result<OwnedFd, TransportError> {
+    Ok(socket::socket(
+        AddressFamily::Unix,
+        #[cfg(target_os = "linux")]
+        SockType::SeqPacket,
+        #[cfg(target_os = "macos")]
+        SockType::Stream,
+        SockFlag::empty(),
+        None,
+    )?)
+}
+
+fn prepare_bind_path(addr: &str) -> Result<(), TransportError> {
+    match lstat(addr) {
+        // First gate: only operate on an existing Unix socket path.
+        // This prevents deleting unrelated filesystem entries.
+        Ok(stat) => {
+            let file_type = SFlag::from_bits_truncate(stat.st_mode);
+            // Only remove stale Unix socket files. Keep any other existing files untouched.
+            if !file_type.contains(SFlag::S_IFSOCK) {
+                return Err(TransportError::AddressInUse);
+            }
+        }
+        Err(ENOENT) => return Ok(()),
+        Err(err) => return Err(err.into()),
+    }
+
+    let probe_fd = create_unix_socket()?;
+    let unix_addr = UnixAddr::new(addr)?;
+    // Second gate: distinguish active listeners from stale socket files.
+    // Active endpoint => report EADDRINUSE. Refused connection => stale file, safe to unlink.
+    match socket::connect(probe_fd.as_raw_fd(), &unix_addr) {
+        Ok(_) | Err(EINPROGRESS) | Err(EAGAIN) | Err(EALREADY) => Err(TransportError::AddressInUse),
+        Err(ECONNREFUSED) => {
+            nix::unistd::unlink(addr)?;
+            log::warn!("Removed stale Unix socket file at {addr}");
+            Ok(())
+        }
+        Err(ENOENT) => Ok(()),
+        Err(err) => Err(err.into()),
     }
 }
 
@@ -35,22 +78,11 @@ impl Drop for UnixDatagramListener {
 }
 impl UnixDatagramListener {
     pub fn bind(addr: &str) -> Result<Self, TransportError> {
+        prepare_bind_path(addr)?;
         // There should be only ENOMEM ENOBUFS  EMFILE ENFILE EACCES
-        let fd = socket::socket(
-            AddressFamily::Unix,
-            #[cfg(target_os = "linux")]
-            SockType::SeqPacket,
-            #[cfg(target_os = "macos")]
-            SockType::Stream,
-            SockFlag::empty(),
-            None,
-        )?;
+        let fd = create_unix_socket()?;
         set_nonblock(fd.as_raw_fd())?;
         let unix_addr = UnixAddr::new(addr)?;
-        if Path::new(addr).exists() {
-            // We ignore errors. This may happen when drop and so on is not in sync
-            let _ = std::fs::remove_file(addr);
-        }
         socket::bind(fd.as_raw_fd(), &unix_addr)?;
         log::info!("Bound to {addr}");
         socket::listen(&fd, Backlog::new(MAX_CONNECTIONS)?)?;
@@ -92,15 +124,7 @@ impl Drop for UnixDatagram {
 }
 impl UnixDatagram {
     pub fn connect(addr: &str) -> Result<Self, TransportError> {
-        let fd = socket::socket(
-            AddressFamily::Unix,
-            #[cfg(target_os = "linux")]
-            SockType::SeqPacket,
-            #[cfg(target_os = "macos")]
-            SockType::Stream,
-            SockFlag::empty(),
-            None,
-        )?;
+        let fd = create_unix_socket()?;
         set_nonblock(fd.as_raw_fd())?;
         let unix_addr = UnixAddr::new(addr)?;
 
