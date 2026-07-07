@@ -4,9 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+## [0.5.0] - 2026-07-07
+
+### Added
+
+* Detect active vs stale socket endpoints when creating publishers on Unix and Windows.
+* Reuse stale socket paths by removing dangling socket files while still rejecting actively used addresses.
+
 ### Changed
 
+* 🚨 Normalize publisher bind failures to report address-in-use semantics when a topic socket is already active.
 * Update dependencies
+
+### Fixed
+
+* Improve reconnect coverage for returning subscribers with additional end-to-end test updates.
 
 ## [0.4.0] - 2026-06-03
 
