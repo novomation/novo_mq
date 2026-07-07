@@ -80,11 +80,7 @@ mod tests {
         transport::uds::{UnixDatagram, UnixDatagramListener},
     };
     use log::{error, info, warn};
-    #[cfg(target_family = "unix")]
-    use nix::sys::socket::{self, AddressFamily, SockFlag, SockType, UnixAddr};
     use std::{
-        os::fd::AsRawFd,
-        path::Path,
         sync::{Arc, atomic::AtomicBool, mpsc::Receiver},
         thread::JoinHandle,
         time::Duration,
@@ -99,39 +95,14 @@ mod tests {
     }
 
     #[test]
-    fn test_bind_fails_if_socket_is_in_use() {
+    fn test_bind_twice_fails() {
         let sock_addr = uuid::Uuid::new_v4().to_string();
         let _listener = UnixDatagramListener::bind(&sock_addr).unwrap();
 
         assert_eq!(
             UnixDatagramListener::bind(&sock_addr).unwrap_err(),
-            TransportError::Os(nix::errno::Errno::EADDRINUSE)
+            TransportError::AddressInUse
         );
-    }
-
-    #[test]
-    fn test_bind_reuses_dangling_socket_file() {
-        let sock_addr = uuid::Uuid::new_v4().to_string();
-
-        {
-            let fd = socket::socket(
-                AddressFamily::Unix,
-                #[cfg(target_os = "linux")]
-                SockType::SeqPacket,
-                #[cfg(target_os = "macos")]
-                SockType::Stream,
-                SockFlag::empty(),
-                None,
-            )
-            .unwrap();
-            let unix_addr = UnixAddr::new(sock_addr.as_str()).unwrap();
-            socket::bind(fd.as_raw_fd(), &unix_addr).unwrap();
-            // Drop fd without unlinking path to simulate a stale socket file.
-        }
-
-        assert!(Path::new(&sock_addr).exists());
-        let listener = UnixDatagramListener::bind(&sock_addr).unwrap();
-        assert_eq!(listener.local_addr(), Some(sock_addr));
     }
 
     #[test]

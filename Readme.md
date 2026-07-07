@@ -21,6 +21,8 @@ novomq = { version = "...", git = "ssh://git@github.com/novomation/novomq.git" }
 ## Rust example
 
 ```rust
+use novomq::datalayer::Datalayer;
+
 let tx = std::thread::spawn(|| {
     let dl = Datalayer::open("test_domain").unwrap();
     let mut pl = dl.publisher("my_topic").unwrap();

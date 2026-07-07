@@ -3,7 +3,7 @@ use crate::{
     transport::{MAX_CONNECTIONS, TransportConnection, TransportError, TransportListener},
 };
 use nix::{
-    errno::Errno::{EAGAIN, EALREADY, ECONNREFUSED, ECONNRESET, EINPROGRESS, ENOENT},
+    errno::Errno::{EAGAIN, EALREADY, ECONNREFUSED, ECONNRESET, EINPROGRESS, ENOENT, EPIPE},
     sys::socket::{self, AddressFamily, Backlog, MsgFlags, RecvMsg, SockFlag, SockType, UnixAddr},
     sys::stat::{SFlag, lstat},
 };
@@ -84,7 +84,7 @@ impl UnixDatagramListener {
         set_nonblock(fd.as_raw_fd())?;
         let unix_addr = UnixAddr::new(addr)?;
         socket::bind(fd.as_raw_fd(), &unix_addr)?;
-        log::info!("Bound to {addr}");
+        log::debug!("UnixDatagramListener bound to {addr}");
         socket::listen(&fd, Backlog::new(MAX_CONNECTIONS)?)?;
 
         Ok(UnixDatagramListener {
@@ -160,7 +160,12 @@ impl TransportConnection for UnixDatagram {
         let ret = socket::send(self.socket.as_raw_fd(), msg, MsgFlags::empty());
         match ret {
             Ok(len) => Ok(len),
-            Err(ECONNRESET) => Err(SendError::ConnectionEnded),
+            // ECONNRESET means the peer has already torn the connection down.
+            // EPIPE means this socket still looked connected, but this write is the first
+            // operation that observed the closed peer and the kernel reports a broken pipe.
+            // In both cases the connection is gone and callers should reconnect instead of
+            // treating the send as an unexpected transport failure.
+            Err(ECONNRESET) | Err(EPIPE) => Err(SendError::ConnectionEnded),
             Err(err) => Err(SendError::OsError(err)),
         }
     }
@@ -192,5 +197,41 @@ impl TransportConnection for UnixDatagram {
             Err(nix::errno::Errno::EAGAIN) => Err(ReceiveError::NoMessageAvailable),
             Err(err) => Err(err.into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{os::fd::AsRawFd, path::Path};
+
+    #[cfg(target_os = "linux")]
+    use nix::sys::socket::SockType;
+    use nix::sys::socket::{self, AddressFamily, SockFlag, UnixAddr};
+
+    use crate::transport::{TransportListener, uds::UnixDatagramListener};
+
+    #[test]
+    fn test_bind_reuses_dangling_socket_file() {
+        let sock_addr = uuid::Uuid::new_v4().to_string();
+
+        {
+            let fd = socket::socket(
+                AddressFamily::Unix,
+                #[cfg(target_os = "linux")]
+                SockType::SeqPacket,
+                #[cfg(target_os = "macos")]
+                SockType::Stream,
+                SockFlag::empty(),
+                None,
+            )
+            .unwrap();
+            let unix_addr = UnixAddr::new(sock_addr.as_str()).unwrap();
+            socket::bind(fd.as_raw_fd(), &unix_addr).unwrap();
+            // Drop fd without unlinking path to simulate a stale socket file.
+        }
+
+        assert!(Path::new(&sock_addr).exists());
+        let listener = UnixDatagramListener::bind(&sock_addr).unwrap();
+        assert_eq!(listener.local_addr(), Some(sock_addr));
     }
 }

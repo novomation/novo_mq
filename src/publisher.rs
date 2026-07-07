@@ -148,10 +148,6 @@ impl Publisher {
                 Err(SendError::OsBufferFull) => {
                     *lost_msg += 1;
                 }
-                // Err(SendError::OsError(Errno::ECONNRESET))
-                // | Err(SendError::OsError(Errno::EPIPE)) => {
-                //     let _ = connections_to_remove.push(i);
-                // }
                 Err(SendError::ConnectionEnded) => {
                     let _ = connections_to_remove.push(i);
                 }
@@ -193,17 +189,19 @@ impl Debug for Publisher {
 
 #[cfg(test)]
 mod test {
+    use std::fs::{create_dir_all, remove_dir};
+
     use super::*;
-    use crate::topic::encode;
     use test_log::test;
 
     #[test]
     fn smoke() {
-        let mut publ = Publisher::new("", "topic").unwrap();
+        create_dir_all("publisher_smoke").unwrap();
+        let mut publ = Publisher::new("publisher_smoke", "topic").unwrap();
 
         publ.try_send("message".as_bytes()).unwrap();
 
-        let sub = UnixDatagram::connect(encode(&publ.topic).as_str()).unwrap();
+        let sub = UnixDatagram::connect(&socket_path("publisher_smoke", "topic")).unwrap();
 
         publ.wait_for_subscribers(1);
         publ.try_send("message".as_bytes()).unwrap();
@@ -214,15 +212,19 @@ mod test {
 
         publ.try_send("iufvghj".as_bytes()).unwrap();
         publ.try_send("iufvghj".as_bytes()).unwrap();
+        remove_dir("publisher_smoke").unwrap();
     }
 
     #[test]
     fn test_publisher_on_same_topic() {
-        let _publ = Publisher::new("", "topic").unwrap();
+        create_dir_all("test_publisher_on_same_topic").unwrap();
+        let _publ = Publisher::new("test_publisher_on_same_topic", "topic").unwrap();
 
         assert_eq!(
-            Publisher::new("", "topic").unwrap_err(),
+            Publisher::new("test_publisher_on_same_topic", "topic").unwrap_err(),
             TransportError::AddressInUse
         );
+        drop(_publ);
+        remove_dir("test_publisher_on_same_topic").unwrap();
     }
 }

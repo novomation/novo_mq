@@ -1,3 +1,4 @@
+#![doc = include_str!("../Readme.md")]
 mod cancelation;
 pub mod datalayer;
 mod helpers;
