@@ -122,6 +122,44 @@ fn bytes_from_i8(src: &[i8]) -> &[u8] {
     unsafe { &*(src as *const _ as *const [u8]) }
 }
 
+fn prepare_bind_path(addr: &str) -> Result<(), TransportError> {
+    let addr_path = Path::new(addr);
+    if !addr_path.exists() {
+        return Ok(());
+    }
+
+    // Guard against deleting non-file paths such as directories.
+    if !addr_path.is_file() {
+        return Err(TransportError::AddressInUse);
+    }
+
+    let probe_socket = OwnedSocket(create_socket()?);
+    let unix_addr = sockaddr_un_new(addr)?;
+    let ret = unsafe {
+        connect(
+            probe_socket.0,
+            &unix_addr as *const _ as *const SOCKADDR,
+            size_of_val(&unix_addr) as i32,
+        )
+    };
+
+    match return_to_result(ret) {
+        Ok(_) => Err(TransportError::AddressInUse),
+        Err(WindowsSocketError::WinsockError(WinsockError::Wouldblock))
+        | Err(WindowsSocketError::WinsockError(WinsockError::Inprogress))
+        | Err(WindowsSocketError::WinsockError(WinsockError::Already))
+        | Err(WindowsSocketError::WinsockError(WinsockError::Isconn)) => {
+            Err(TransportError::AddressInUse)
+        }
+        Err(WindowsSocketError::WinsockError(WinsockError::Connrefused)) => {
+            std::fs::remove_file(addr).map_err(|_| TransportError::AddressInUse)?;
+            log::warn!("Removed stale Unix socket file at {addr}");
+            Ok(())
+        }
+        Err(err) => Err(TransportError::Os(err)),
+    }
+}
+
 #[derive(Debug)]
 pub struct OwnedSocket(SOCKET);
 impl Drop for OwnedSocket {
@@ -143,13 +181,8 @@ impl Drop for UnixDatagramListener {
 }
 impl UnixDatagramListener {
     pub fn bind(addr: &str) -> Result<Self, TransportError> {
+        prepare_bind_path(addr)?;
         let fd = create_socket()?;
-        let addr_path = Path::new(addr);
-
-        if addr_path.exists() {
-            // We ignore errors. This may happen when drop and so on is not in sync
-            let _ = std::fs::remove_file(addr);
-        }
         let unix_addr = sockaddr_un_new(addr)?;
 
         let ret = unsafe {
@@ -159,7 +192,13 @@ impl UnixDatagramListener {
                 size_of_val(&unix_addr) as i32,
             )
         };
-        return_to_result(ret)?;
+        match return_to_result(ret) {
+            Ok(_) => (),
+            Err(WindowsSocketError::WinsockError(WinsockError::Addrinuse)) => {
+                return Err(TransportError::AddressInUse);
+            }
+            Err(err) => return Err(TransportError::Os(err)),
+        }
         log::debug!("UnixDatagramListener bound to {addr}");
         let ret = unsafe { listen(fd, MAX_CONNECTIONS) };
         return_to_result(ret)?;
