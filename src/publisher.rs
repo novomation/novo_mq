@@ -203,7 +203,7 @@ mod test {
 
         publ.try_send("message".as_bytes()).unwrap();
 
-        let sub = UnixDatagram::connect(encode(&publ.topic).as_str()).unwrap();
+        let sub = UnixDatagram::<()>::connect(encode(&publ.topic).as_str(), ()).unwrap();
 
         publ.wait_for_subscribers(1);
         publ.try_send("message".as_bytes()).unwrap();

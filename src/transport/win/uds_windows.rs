@@ -249,7 +249,7 @@ impl TransportConnection for UnixDatagram {
     fn peer_addr(&self) -> Option<String> {
         peer_addr(self.socket.0)
     }
-    fn send(&self, msg: &[u8]) -> Result<usize, SendError> {
+    fn send(&mut self, msg: &[u8]) -> Result<usize, SendError> {
         let ret = unsafe {
             send(
                 self.socket.0,
@@ -281,7 +281,7 @@ impl TransportConnection for UnixDatagram {
         Ok(ret as usize)
     }
 
-    fn recv(&self, recv_buffer: &mut [u8]) -> Result<usize, ReceiveError> {
+    fn recv(&mut self, recv_buffer: &mut [u8]) -> Result<usize, ReceiveError> {
         let mut len = [0u8; 2];
         let ret = unsafe { recv(self.socket.0, &mut len, SEND_RECV_FLAGS(0)) };
         match return_to_result(ret) {
