@@ -45,7 +45,7 @@ impl Subscriber {
                 debug!("Start subscriber `{topic}` mgmt thread and try to connect");
                 while !cancel_token.is_cancelled() {
                     if !has_connection.load(Ordering::Acquire) {
-                        match UnixDatagram::connect(&publ_path) {
+                        match UnixDatagram::<()>::connect(&publ_path, ()) {
                             Ok(connection) => {
                                 has_connection.store(true, Ordering::Release);
                                 let _ = tx_new_socket.try_send(Box::new(connection)).inspect_err(
@@ -81,7 +81,7 @@ impl Subscriber {
         if self.socket.is_none() {
             self.socket = self.rx_new_socket.try_recv();
         }
-        if let Some(socket) = &self.socket {
+        if let Some(socket) = &mut self.socket {
             let bytes = socket.recv(message)?;
             let read_bytes = bytes.min(message.len());
             // When a stream socket peer has performed an orderly shutdown, the

@@ -201,7 +201,7 @@ mod test {
 
         publ.try_send("message".as_bytes()).unwrap();
 
-        let sub = UnixDatagram::connect(&socket_path("publisher_smoke", "topic")).unwrap();
+        let sub = UnixDatagram::<()>::connect(&socket_path("publisher_smoke", "topic"), ()).unwrap();
 
         publ.wait_for_subscribers(1);
         publ.try_send("message".as_bytes()).unwrap();
