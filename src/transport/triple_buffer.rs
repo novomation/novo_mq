@@ -7,7 +7,12 @@ const INDEX_MASK: usize = 0b011;
 
 #[derive(Debug)]
 pub struct Shared<T: Sized> {
-    mem: [UnsafeCell<Option<T>>; 3],
+    // Each slot is individually cache-line padded. Without this, small `T`s
+    // (e.g. `[u8; N]` payloads) pack multiple slots into the same cache
+    // line; since the writer and reader almost always touch *different*
+    // slots concurrently, that causes false sharing (needless cross-core
+    // cache-line invalidation) on every write/read.
+    mem: [CachePadded<UnsafeCell<Option<T>>>; 3],
     latest_free: CachePadded<AtomicUsize>,
 }
 
@@ -15,9 +20,9 @@ impl<T> Shared<T> {
     fn new() -> Self {
         Shared {
             mem: [
-                UnsafeCell::new(None),
-                UnsafeCell::new(None),
-                UnsafeCell::new(None),
+                CachePadded::new(UnsafeCell::new(None)),
+                CachePadded::new(UnsafeCell::new(None)),
+                CachePadded::new(UnsafeCell::new(None)),
             ],
             latest_free: CachePadded::new(0.into()),
         }
@@ -95,6 +100,32 @@ impl<T> Reader<T> {
 
         unsafe { (*(*self.shared).mem[self.read_idx].get()).clone() }
     }
+
+    /// Reads the latest available value in place via `read`, without
+    /// cloning it onto the stack first.
+    ///
+    /// `read` is called with a `&T` pointing directly at the latest slot in
+    /// shared memory; its return value `R` is passed back. Returns [None]
+    /// if the [Writer] has not written anything yet.
+    #[inline]
+    pub fn try_read_with<F, R>(&mut self, read: F) -> Option<R>
+    where
+        F: FnOnce(&T) -> R,
+    {
+        let has_new_data =
+            unsafe { (*self.shared).latest_free.load(Ordering::Acquire) } & NEW_DATA_FLAG > 0;
+        if has_new_data {
+            self.read_idx = unsafe {
+                (*self.shared)
+                    .latest_free
+                    .swap(self.read_idx, Ordering::AcqRel)
+                    & INDEX_MASK
+            };
+        }
+
+        let value = unsafe { (*(*self.shared).mem[self.read_idx].get()).as_ref() }?;
+        Some(read(value))
+    }
 }
 
 /// The writing side of the [triple_buffer].
@@ -143,6 +174,81 @@ impl<T> Writer<T> {
                 .latest_free
                 .swap(self.write_idx | NEW_DATA_FLAG, Ordering::AcqRel)
         };
+    }
+
+    /// Writes a new value in place via `init`, without going through an
+    /// intermediate stack copy.
+    ///
+    /// `init` is called with a `&mut T` pointing directly at the next free
+    /// slot in shared memory (pre-populated with `T::default()` if it was
+    /// previously empty, otherwise still holding whatever value was written
+    /// there two writes ago). This lets callers (e.g. copy bytes into a
+    /// fixed-size buffer) write directly into shared memory instead of
+    /// building the value on the stack and then moving/copying it in via
+    /// [`Writer::write`].
+    #[inline]
+    pub fn write_with<F>(&mut self, init: F)
+    where
+        T: Default,
+        F: FnOnce(&mut T),
+    {
+        let idx = self.write_idx & INDEX_MASK;
+        unsafe {
+            let slot = (*self.shared).mem[idx].get();
+            if (*slot).is_none() {
+                *slot = Some(T::default());
+            }
+            // Safety: we just ensured `*slot` is `Some(_)`.
+            init((*slot).as_mut().unwrap_unchecked());
+        }
+
+        // Store index
+        self.last_written = Some(idx);
+        self.write_idx = unsafe {
+            (*self.shared)
+                .latest_free
+                .swap(self.write_idx | NEW_DATA_FLAG, Ordering::AcqRel)
+        };
+    }
+}
+
+impl<T: AsMut<[u8]> + Default> Writer<(usize, T)> {
+    /// Copies `buf` directly into the next shared-memory slot as raw bytes
+    /// (truncated to the slot's capacity), and publishes it as the newest
+    /// value.
+    ///
+    /// Returns the number of bytes actually copied; if this is less than
+    /// `buf.len()`, the slot's capacity was too small and the data was
+    /// truncated.
+    #[inline]
+    pub fn write_bytes(&mut self, buf: &[u8]) -> usize {
+        let mut copied = 0;
+        self.write_with(|(len, data)| {
+            let dst = data.as_mut();
+            copied = buf.len().min(dst.len());
+            dst[..copied].copy_from_slice(&buf[..copied]);
+            *len = copied;
+        });
+        copied
+    }
+}
+
+impl<T: AsRef<[u8]>> Reader<(usize, T)> {
+    /// Copies the latest available message directly out of shared memory
+    /// into `buf`, without cloning the full slot value onto the stack first.
+    ///
+    /// Returns `Some(msg_len)` with the original message length (which may
+    /// be larger than `buf.len()`, in which case only `buf.len()` bytes were
+    /// copied into `buf` and the caller should treat this as truncation).
+    /// Returns `None` if the [Writer] has not written anything yet.
+    #[inline]
+    pub fn read_bytes(&mut self, buf: &mut [u8]) -> Option<usize> {
+        self.try_read_with(|(msg_len, data)| {
+            let src = &data.as_ref()[..*msg_len];
+            let copied = buf.len().min(*msg_len);
+            buf[..copied].copy_from_slice(&src[..copied]);
+            *msg_len
+        })
     }
 }
 
