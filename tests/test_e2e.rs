@@ -16,7 +16,7 @@ fn test_reconnect_of_subscriber() {
     let rx = std::thread::spawn(|| {
         let dl = Datalayer::open("test_reconnect_of_subscriber").unwrap();
         {
-            let mut sub = dl.subscriber("my_topic").unwrap();
+            let mut sub = dl.subscriber("my_topic", ()).unwrap();
             sub.wait_until_connected();
             let mut buf = [0u8; 500];
             loop {
@@ -27,7 +27,7 @@ fn test_reconnect_of_subscriber() {
             }
         }
         {
-            let mut sub = dl.subscriber("my_topic").unwrap();
+            let mut sub = dl.subscriber("my_topic", ()).unwrap();
             sub.wait_until_connected();
             let mut buf = [0u8; 500];
             loop {

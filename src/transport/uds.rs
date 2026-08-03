@@ -1,14 +1,15 @@
 use crate::{
     ReceiveError,
     SendError::{self},
+    helpers::set_calling_thread_to_nrt,
     transport::{
         MAX_CONNECTIONS, TransportConnection, TransportError, TransportListener, triple_buffer,
     },
 };
-use base64::engine::Config;
 use memmap2::MmapMut;
-use nix::sys::epoll::{
-    EpollCreateFlags, EpollEvent, EpollFlags, EpollOp, epoll_create1, epoll_ctl, epoll_wait,
+use nix::sys::{
+    epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags, EpollTimeout},
+    eventfd::{EfdFlags, EventFd},
 };
 use nix::{
     errno::Errno::{EAGAIN, EALREADY, ECONNREFUSED, ECONNRESET, EINPROGRESS, ENOENT, EPIPE},
@@ -16,11 +17,14 @@ use nix::{
     sys::stat::{SFlag, lstat},
 };
 use std::{
+    collections::HashMap,
     io::IoSliceMut,
-    os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
+    os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd},
+    path::Path,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
 };
 
@@ -83,7 +87,7 @@ fn prepare_bind_path(addr: &str) -> Result<(), TransportError> {
 ///
 /// The default `()` implementation is a no-op, so existing code that doesn't
 /// need any extra per-connection data keeps working unchanged.
-pub trait BulkTransport: Sized {
+pub trait BulkTransport: Sized + Send {
     type Config;
     /// Called right after the listener's `accept()` succeeds, before the
     /// connection is handed back to the caller.
@@ -110,7 +114,7 @@ pub trait BulkTransport: Sized {
 /// Internally, `(usize, T)` is stored so that the actual message length is
 /// preserved alongside the fixed-size data buffer.
 #[derive(Debug)]
-pub struct TbTransport<T> {
+pub struct TbTransport<T: Send> {
     writer: triple_buffer::Writer<(usize, T)>,
     reader: triple_buffer::Reader<(usize, T)>,
     /// Keeps the writer-side mmap alive.
@@ -122,12 +126,146 @@ pub struct TbTransport<T> {
     conn_is_lost: Arc<AtomicBool>,
 }
 
-impl<T> BulkTransport for TbTransport<T>
+/// Handle used to hand a connection's fd off to the shared connection-loss
+/// monitor thread. All connections (both `on_accept` and `on_connect`) are
+/// watched by the same background thread via a single `epoll` instance;
+/// `fd_queue` enqueues new fds to watch and `event_fd` wakes up the monitor's
+/// blocking `epoll_wait` so it picks up the new fd promptly.
+#[derive(Clone)]
+pub struct TbTransportConfig {
+    fd_queue: mpsc::Sender<(RawFd, Arc<AtomicBool>)>,
+    event_fd: Arc<EventFd>,
+}
+
+impl TbTransportConfig {
+    pub fn new() -> Self {
+        connection_monitor().clone()
+    }
+
+    /// Registers `fd` with the monitor thread and returns the flag that will
+    /// be set to `true` once the peer's connection is detected as lost.
+    fn register(&self, fd: RawFd) -> Arc<AtomicBool> {
+        let conn_is_lost = Arc::new(AtomicBool::new(false));
+        if self.fd_queue.send((fd, conn_is_lost.clone())).is_err() {
+            log::error!("Connection monitor thread is gone; not tracking fd {fd}");
+            return conn_is_lost;
+        }
+        // Wake up epoll_wait so it registers the new fd promptly.
+        let _ = self.event_fd.write(1);
+        conn_is_lost
+    }
+}
+
+impl Default for TbTransportConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Lazily starts the single background thread that detects connection loss
+/// (via `epoll`) for every `TbTransport` connection, and returns a cloneable
+/// handle to it.
+fn connection_monitor() -> &'static TbTransportConfig {
+    static MONITOR: OnceLock<TbTransportConfig> = OnceLock::new();
+    MONITOR.get_or_init(|| {
+        let (fd_queue, rx) = mpsc::channel();
+        let event_fd =
+            Arc::new(EventFd::from_flags(EfdFlags::EFD_NONBLOCK).expect("create eventfd"));
+        let monitor_event_fd = event_fd.clone();
+        std::thread::Builder::new()
+            .name("novomq-conn-monitor".to_string())
+            .spawn(move || {
+                set_calling_thread_to_nrt();
+                run_connection_monitor(rx, monitor_event_fd);
+            })
+            .expect("spawn connection monitor thread");
+        TbTransportConfig { fd_queue, event_fd }
+    })
+}
+
+/// Token used as the `epoll` event data for the wake-up eventfd, so it can be
+/// told apart from a real connection fd (which is always a small, positive
+/// integer).
+const WAKE_TOKEN: u64 = u64::MAX;
+
+/// Body of the shared connection-loss monitor thread. Waits on `event_fd`
+/// (used to wake up when new connections are queued via `rx`) and on every
+/// fd handed to it, then marks the corresponding `Arc<AtomicBool>` once the
+/// peer's socket signals hang-up/error.
+fn run_connection_monitor(rx: mpsc::Receiver<(RawFd, Arc<AtomicBool>)>, event_fd: Arc<EventFd>) {
+    let epoll = match Epoll::new(EpollCreateFlags::EPOLL_CLOEXEC) {
+        Ok(epoll) => epoll,
+        Err(err) => {
+            log::error!("Connection monitor: could not create epoll instance: {err}");
+            return;
+        }
+    };
+
+    let wake_event = EpollEvent::new(EpollFlags::EPOLLIN, WAKE_TOKEN);
+    if let Err(err) = epoll.add(&*event_fd, wake_event) {
+        log::error!("Connection monitor: could not register wake eventfd: {err}");
+        return;
+    }
+
+    let mut connections: HashMap<RawFd, Arc<AtomicBool>> = HashMap::new();
+    let mut events = vec![EpollEvent::empty(); 64];
+    loop {
+        let n = match epoll.wait(&mut events, EpollTimeout::NONE) {
+            Ok(n) => n,
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(err) => {
+                log::error!("Connection monitor: epoll_wait failed: {err}");
+                break;
+            }
+        };
+
+        for event in &events[..n] {
+            let token = event.data();
+            if token == WAKE_TOKEN {
+                // Drain the eventfd counter, then register any newly-queued fds.
+                let _ = event_fd.read();
+                while let Ok((fd, conn_is_lost)) = rx.try_recv() {
+                    let interest = EpollEvent::new(
+                        EpollFlags::EPOLLIN
+                            | EpollFlags::EPOLLRDHUP
+                            | EpollFlags::EPOLLERR
+                            | EpollFlags::EPOLLHUP,
+                        fd as u64,
+                    );
+                    // Safety: `fd` is a valid, open descriptor owned elsewhere for
+                    // at least the duration of this call; we only borrow it to
+                    // register it with epoll.
+                    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+                    match epoll.add(borrowed, interest) {
+                        Ok(()) => {
+                            connections.insert(fd, conn_is_lost);
+                        }
+                        Err(err) => {
+                            log::warn!("Connection monitor: could not watch fd {fd}: {err}");
+                        }
+                    }
+                }
+            } else {
+                let fd = token as RawFd;
+                if let Some(conn_is_lost) = connections.remove(&fd) {
+                    conn_is_lost.store(true, Ordering::Relaxed);
+                    // Safety: same as above; `fd` is still open at this point.
+                    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+                    let _ = epoll.delete(borrowed);
+                    log::info!("Connection monitor: connection lost for fd {fd}");
+                }
+            }
+        }
+    }
+}
+
+impl<T: Send> BulkTransport for TbTransport<T>
 where
     T: Default + AsMut<[u8]> + AsRef<[u8]> + Clone + Sized,
 {
-    type Config = ();
+    type Config = TbTransportConfig;
     fn on_accept(fd: RawFd) -> Result<Self, TransportError> {
+        let conn_is_lost = connection_monitor().register(fd);
         // Channel A: this side writes, peer reads.
         let writer_memfd = triple_buffer::create_memfd(
             triple_buffer::required_size::<(usize, T)>(),
@@ -151,7 +289,7 @@ where
         triple_buffer::send_memfd(fd, reader_memfd.as_raw_fd()).unwrap();
 
         log::info!(
-            "Allocated 2×{} bytes for bidirectional shared-memory transport",
+            "Allocated 2*{} bytes for bidirectional shared-memory transport",
             triple_buffer::required_size::<(usize, T)>()
         );
         Ok(Self {
@@ -161,11 +299,11 @@ where
             _writer_memfd: writer_memfd,
             _reader_mmap: reader_mmap,
             _reader_memfd: reader_memfd,
-            conn_is_lost: Arc::new(AtomicBool::new(false)),
+            conn_is_lost,
         })
     }
 
-    fn on_connect(fd: RawFd, _cofig: Self::Config) -> Result<Self, TransportError> {
+    fn on_connect(fd: RawFd, config: Self::Config) -> Result<Self, TransportError> {
         let recv = || -> Result<OwnedFd, TransportError> {
             loop {
                 match triple_buffer::recv_memfd(fd.as_raw_fd()) {
@@ -199,27 +337,7 @@ where
             "Connected: bidirectional shared-memory transport, {} bytes per direction",
             triple_buffer::required_size::<(usize, T)>()
         );
-        let conn_is_lost = Arc::new(AtomicBool::new(false));
-        std::thread::spawn({
-            let conn_is_lost = conn_is_lost.clone();
-            move || {
-                let epoll_fd = epoll_create1(EpollCreateFlags::EPOLL_CLOEXEC).unwrap();
-                let mut event = EpollEvent::new(
-                    EpollFlags::EPOLLIN
-                        | EpollFlags::EPOLLRDHUP
-                        | EpollFlags::EPOLLERR
-                        | EpollFlags::EPOLLHUP,
-                    fd as u64,
-                );
-
-                epoll_ctl(epoll_fd, EpollOp::EpollCtlAdd, fd, Some(&mut event)).unwrap();
-                let mut events = vec![EpollEvent::empty(); 64];
-                let event_idx = epoll_wait(epoll_fd, &mut events, -1).unwrap();
-
-                conn_is_lost.store(true, Ordering::Relaxed);
-                log::info!("Connection lost: {}, {:?}.", event_idx, events[event_idx]);
-            }
-        });
+        let conn_is_lost = config.register(fd);
 
         Ok(Self {
             writer,
@@ -276,6 +394,12 @@ impl BulkTransport for () {
         Ok(())
     }
     fn on_connect(_fd: RawFd, _cofig: Self::Config) -> Result<Self, TransportError> {
+        #[cfg(test)]
+        {
+            use std::time::Duration;
+            log::info!("In test case, so we sleep a little bit to test for race condition");
+            std::thread::sleep(Duration::from_millis(100));
+        }
         Ok(())
     }
 

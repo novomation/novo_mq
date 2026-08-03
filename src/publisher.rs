@@ -4,7 +4,7 @@ use crate::{
     topic::socket_path,
     transport::{
         SendError, TransportConnection, TransportError, TransportListener,
-        uds::{UnixDatagram, UnixDatagramListener},
+        uds::{BulkTransport, UnixDatagram, UnixDatagramListener},
     },
 };
 use log::{debug, error, info};
@@ -20,9 +20,9 @@ use std::{
 };
 use waitfree_sync::spsc;
 
-pub struct Publisher {
-    connections: Vec<(UnixDatagram, usize)>,
-    rx_connection: spsc::Receiver<UnixDatagram>,
+pub struct Publisher<T: BulkTransport> {
+    connections: Vec<(UnixDatagram<T>, usize)>,
+    rx_connection: spsc::Receiver<UnixDatagram<T>>,
     cancel_token: CancelationToken,
     number_of_subscribers: Arc<AtomicUsize>,
 
@@ -30,7 +30,7 @@ pub struct Publisher {
     condvar: Arc<(Mutex<usize>, Condvar)>,
     join_mgmt: Option<JoinHandle<()>>,
 }
-impl Publisher {
+impl<T: BulkTransport + 'static> Publisher<T> {
     pub(crate) fn new(
         domain: impl AsRef<Path>,
         topic: impl AsRef<str>,
@@ -39,10 +39,10 @@ impl Publisher {
 
         let number_of_subscribers = Arc::new(AtomicUsize::new(0));
         let socket_addr = socket_path(domain, &topic);
-        let mut listener = UnixDatagramListener::bind(&socket_addr)
+        let mut listener = UnixDatagramListener::<T>::bind(&socket_addr)
             .inspect_err(|err| error!("Could not bind {err}"))?;
 
-        let (mut tx_connection, rx_connection) = spsc::spsc::<UnixDatagram>(64);
+        let (mut tx_connection, rx_connection) = spsc::spsc::<UnixDatagram<T>>(64);
         let cancel_token = CancelationToken::new();
 
         let condvar = Arc::new((Mutex::new(usize::MAX), Condvar::new()));
@@ -76,6 +76,7 @@ impl Publisher {
                             if let Ok(mut started) = lock.lock() {
                                 *started = number_of_subscribers.load(Ordering::Acquire);
                                 // We notify the condvar that the value has changed.
+                                log::info!("Notifying publisher.");
                                 cvar.notify_one();
                             }
                         }
@@ -93,8 +94,9 @@ impl Publisher {
         let (num, cvar) = &*condvar.clone();
         let mut num = num.lock().unwrap();
 
-        while *num != 0_usize {
+        while *num == usize::MAX {
             num = cvar.wait(num).unwrap();
+            log::info!("Got connection notification {num}")
         }
 
         Ok(Self {
@@ -164,7 +166,7 @@ impl Publisher {
         Ok(())
     }
 }
-impl Drop for Publisher {
+impl<T: BulkTransport> Drop for Publisher<T> {
     fn drop(&mut self) {
         self.cancel_token.cancel();
         // Wait for the managment thread to finish so that everything is dropped.
@@ -173,7 +175,7 @@ impl Drop for Publisher {
         }
     }
 }
-impl Debug for Publisher {
+impl<T: BulkTransport + 'static> Debug for Publisher<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Publisher")
             .field("connections", &self.connections.len())
@@ -192,16 +194,17 @@ mod test {
     use std::fs::{create_dir_all, remove_dir};
 
     use super::*;
+    use crate::{datalayer::TbTransport, topic::encode, transport::uds::TbTransportConfig};
     use test_log::test;
 
+    type TbTransp = TbTransport<[u8; 24]>;
     #[test]
     fn smoke() {
-        create_dir_all("publisher_smoke").unwrap();
-        let mut publ = Publisher::new("publisher_smoke", "topic").unwrap();
+        let mut publ = Publisher::<()>::new("", "topic").unwrap();
 
         publ.try_send("message".as_bytes()).unwrap();
 
-        let sub = UnixDatagram::<()>::connect(&socket_path("publisher_smoke", "topic"), ()).unwrap();
+        let sub = UnixDatagram::<()>::connect(encode(&publ.topic).as_str(), ()).unwrap();
 
         publ.wait_for_subscribers(1);
         publ.try_send("message".as_bytes()).unwrap();
@@ -212,19 +215,41 @@ mod test {
 
         publ.try_send("iufvghj".as_bytes()).unwrap();
         publ.try_send("iufvghj".as_bytes()).unwrap();
-        remove_dir("publisher_smoke").unwrap();
     }
 
     #[test]
     fn test_publisher_on_same_topic() {
         create_dir_all("test_publisher_on_same_topic").unwrap();
-        let _publ = Publisher::new("test_publisher_on_same_topic", "topic").unwrap();
+        let _publ = Publisher::<()>::new("test_publisher_on_same_topic", "topic").unwrap();
 
         assert_eq!(
-            Publisher::new("test_publisher_on_same_topic", "topic").unwrap_err(),
+            Publisher::<()>::new("test_publisher_on_same_topic", "topic").unwrap_err(),
             TransportError::AddressInUse
         );
         drop(_publ);
         remove_dir("test_publisher_on_same_topic").unwrap();
+    }
+
+    #[test]
+    fn smoke_tb() {
+        let mut publ = Publisher::<TbTransp>::new("", "topic_tbf").unwrap();
+
+        publ.try_send("message".as_bytes()).unwrap();
+
+        let sub = UnixDatagram::<TbTransp>::connect(
+            encode(&publ.topic).as_str(),
+            TbTransportConfig::new(),
+        )
+        .unwrap();
+
+        publ.wait_for_subscribers(1);
+        publ.try_send("message".as_bytes()).unwrap();
+
+        drop(sub);
+
+        publ.wait_for_subscribers(1);
+
+        publ.try_send("iufvghj".as_bytes()).unwrap();
+        publ.try_send("iufvghj".as_bytes()).unwrap();
     }
 }
