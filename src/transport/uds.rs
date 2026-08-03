@@ -317,7 +317,7 @@ where
             loop {
                 match shm_helpers::recv_memfd(fd.as_raw_fd()) {
                     Ok(owned) => return Ok(owned),
-                    Err(triple_buffer::FdPassError::Nix(nix::errno::Errno::EAGAIN)) => {
+                    Err(shm_helpers::FdPassError::Nix(nix::errno::Errno::EAGAIN)) => {
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
                     Err(e) => {

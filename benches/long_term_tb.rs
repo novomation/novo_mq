@@ -172,7 +172,8 @@ fn main() {
                 let msg = Payload::from_bytes(&buffer);
                 if last_idx != Some(msg.idx) {
                     last_idx = Some(msg.idx);
-                    let latency = (t_rx - msg.time) as f64 / 1000.0;
+                    // Keep full nanosecond precision (no lossy us round-trip).
+                    let latency = (t_rx - msg.time) as f64;
                     tx_lat.try_send(latency).unwrap();
                     // log::info!("Got msg");
                 } else {
@@ -188,15 +189,15 @@ fn main() {
             mma.insert(lat as i64);
         }
         let mma_state = mma.collect();
-        if mma_state.max > 10.0 {
+        if mma_state.max > 1000.0 {
             warn!(
-                "min:{:.2}us avg:{:.2}us max:{:.2}us",
-                mma_state.min, mma_state.avg, mma_state.max
+                "min:{:6.1}ns avg:{:6.1}ns max:{:6.1}ns",
+                mma_state.min, mma_state.avg, mma_state.max,
             );
-        } else if mma_state.max >= 7.0 {
+        } else if mma_state.max >= 10.0 {
             info!(
-                "min:{:.2}us avg:{:.2}us max:{:.2}us",
-                mma_state.min, mma_state.avg, mma_state.max
+                "min:{:6.1}ns avg:{:6.1}ns max:{:6.1}ns",
+                mma_state.min, mma_state.avg, mma_state.max,
             );
         }
 
