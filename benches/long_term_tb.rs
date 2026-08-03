@@ -19,6 +19,7 @@ use waitfree_sync::spsc::spsc;
 const CYCLETIME_US: u64 = 1_000;
 
 #[repr(C, packed)]
+#[derive(Default, Clone, Copy)]
 struct Payload {
     idx: u64,
     time: u64,
@@ -35,6 +36,30 @@ impl Payload {
         let idx = u64::from_le_bytes(bytes[..8].try_into().unwrap());
         let time = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
         Payload { idx, time }
+    }
+}
+impl AsRef<[u8]> for Payload {
+    fn as_ref(&self) -> &[u8] {
+        // Safety: `Payload` is `repr(C, packed)` with only `u64` fields, so
+        // it has no padding and is exactly `size_of::<Payload>()` bytes;
+        // `u8` has no alignment requirements, so this cast is always valid.
+        unsafe {
+            std::slice::from_raw_parts(
+                self as *const Self as *const u8,
+                std::mem::size_of::<Self>(),
+            )
+        }
+    }
+}
+impl AsMut<[u8]> for Payload {
+    fn as_mut(&mut self) -> &mut [u8] {
+        // Safety: see `AsRef` impl above.
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self as *mut Self as *mut u8,
+                std::mem::size_of::<Self>(),
+            )
+        }
     }
 }
 
@@ -98,7 +123,7 @@ pub struct MinMaxAvg {
     pub avg: f64,
 }
 
-type TbTrans = TbTransport<[u8; 16]>;
+type TbTrans = TbTransport<Payload>;
 
 fn main() {
     let _ = mlockall(MmanFlags::MCL_CURRENT | MmanFlags::MCL_FUTURE)
