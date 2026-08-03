@@ -1,0 +1,11 @@
+{
+  "rust-analyzer.runnables.extraEnv": {
+    "RUST_LOG": "Info,novo_runtime=Debug"
+  },
+  "[rust]": {
+    "editor.formatOnSave": true
+  },
+  "rust-analyzer.checkOnSave": true,
+  "rust-analyzer.check.command": "clippy",
+  "C_Cpp.clang_format_fallbackStyle": "{ BasedOnStyle: Google, IndentWidth: 4, ColumnLimit: 0}"
+}

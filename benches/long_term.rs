@@ -156,6 +156,7 @@ fn main() {
 
         while !stop_flag.load(Ordering::Relaxed) {
             if let Ok((len, _)) = p.try_recv(&mut buffer) {
+                debug!("Received message");
                 let t_rx = now();
                 assert_eq!(len, 16);
                 let msg = Payload::from_bytes(&buffer);
@@ -176,7 +177,7 @@ fn main() {
                 "min:{:.2}us avg:{:.2}us max:{:.2}us",
                 mma_state.min, mma_state.avg, mma_state.max
             );
-        } else if mma_state.max >= 7.0 {
+        } else if mma_state.max >= 0.0 {
             info!(
                 "min:{:.2}us avg:{:.2}us max:{:.2}us",
                 mma_state.min, mma_state.avg, mma_state.max
