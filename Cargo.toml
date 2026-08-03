@@ -41,6 +41,7 @@ test-log = "0.2"
 plotly = "0.14"
 simple_logger = "5.2"
 dhat = { version = "0.3.3" }
+zerocopy = { version = "0.8", features = ["derive"] }
 
 [features]
 rtsan = ["rtsan-standalone"]
@@ -57,4 +58,8 @@ harness = false
 
 [[bench]]
 name = "long_term_tb"
+harness = false
+
+[[bench]]
+name = "mem_test"
 harness = false
