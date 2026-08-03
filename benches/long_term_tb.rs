@@ -3,12 +3,14 @@ use novomq::{
     datalayer::{Datalayer, TbTransport, TbTransportConfig},
     subscriber::Subscriber,
 };
+const NO_BYTES: usize = 16;
 use rt_tunex::{
     clock::{ClockId, get_time},
     mman::{MmanFlags, mlockall},
     sched::{CpuSet, Pid, set_affinity, set_fifo},
 };
 use std::{
+    mem::size_of,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -16,55 +18,59 @@ use std::{
     time::Duration,
 };
 use waitfree_sync::spsc::spsc;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 const CYCLETIME_US: u64 = 1_000;
 
 #[repr(C, packed)]
-#[derive(Default, Clone, Copy)]
+#[derive(Clone, Copy, Immutable, KnownLayout, FromBytes, IntoBytes, Unaligned)]
 struct Payload {
     idx: u64,
     time: u64,
+    bytes: [u8; NO_BYTES],
 }
-impl Payload {
-    fn to_bytes(&self) -> [u8; 16] {
-        let mut bytes = [0u8; 16];
-        bytes[..8].copy_from_slice(&self.idx.to_le_bytes());
-        bytes[8..].copy_from_slice(&self.time.to_le_bytes());
-        bytes
-    }
 
-    fn from_bytes(bytes: &[u8]) -> Self {
-        let idx = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-        let time = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
-        Payload { idx, time }
+impl Default for Payload {
+    // Manual impl: `#[derive(Default)]`/the std array impl only cover
+    // arrays up to length 32, but `bytes` is NO_BYTES bytes; an explicit array
+    // literal has no such limit.
+    fn default() -> Self {
+        Payload {
+            idx: 0,
+            time: 0,
+            bytes: [0u8; NO_BYTES],
+        }
     }
 }
+
 impl AsRef<[u8]> for Payload {
     fn as_ref(&self) -> &[u8] {
-        // Safety: `Payload` is `repr(C, packed)` with only `u64` fields, so
-        // it has no padding and is exactly `size_of::<Payload>()` bytes;
-        // `u8` has no alignment requirements, so this cast is always valid.
-        unsafe {
-            std::slice::from_raw_parts(
-                self as *const Self as *const u8,
-                std::mem::size_of::<Self>(),
-            )
-        }
+        // Zero-copy: reinterprets `self`'s own bytes in place, no copying.
+        self.as_bytes()
     }
 }
 impl AsMut<[u8]> for Payload {
     fn as_mut(&mut self) -> &mut [u8] {
-        // Safety: see `AsRef` impl above.
-        unsafe {
-            std::slice::from_raw_parts_mut(
-                self as *mut Self as *mut u8,
-                std::mem::size_of::<Self>(),
-            )
-        }
+        // Zero-copy: reinterprets `self`'s own bytes in place, no copying.
+        self.as_mut_bytes()
     }
 }
 
 fn now() -> u64 {
     get_time(ClockId::ClockMonotonic).unwrap().as_nanoseconds() as u64
+}
+
+// Over the measured round-trip latency, the payload is copied twice:
+// write_bytes() (TX local -> shared triple buffer) and read_bytes() (shared
+// triple buffer -> RX local buffer).
+const BYTES_PER_ROUNDTRIP: usize = 2 * size_of::<Payload>();
+
+// `ns` is a duration in nanoseconds; 1 byte/ns == 1e9 bytes/s == 1 GB/s, so
+// this conversion needs no extra scaling factor.
+fn throughput_gbps(bytes: usize, ns: f64) -> f64 {
+    if ns <= 0.0 {
+        return 0.0;
+    }
+    bytes as f64 / ns
 }
 
 #[derive(Debug)]
@@ -123,7 +129,7 @@ pub struct MinMaxAvg {
     pub avg: f64,
 }
 
-type TbTrans = TbTransport<[u8; 16]>;
+type TbTrans = TbTransport<Payload>;
 
 fn main() {
     let _ = mlockall(MmanFlags::MCL_CURRENT | MmanFlags::MCL_FUTURE)
@@ -155,12 +161,15 @@ fn main() {
 
             info!("TX ready");
             let mut i = 0;
+            let mut msg = Payload {
+                idx: i,
+                time: now(),
+                bytes: [0u8; NO_BYTES],
+            };
             while !stop_flag.load(Ordering::Relaxed) {
-                let msg = Payload {
-                    idx: i,
-                    time: now(),
-                };
-                p.try_send(&msg.to_bytes()).unwrap();
+                msg.idx = i;
+                msg.time = now();
+                p.try_send(msg.as_bytes()).unwrap();
                 std::thread::sleep(Duration::from_micros(CYCLETIME_US));
                 debug!("Send {i}th message");
                 i = i.wrapping_add(1);
@@ -180,7 +189,7 @@ fn main() {
             .unwrap();
         p.wait_until_connected();
 
-        let mut buffer = [0u8; 1000];
+        let mut buffer = [0u8; size_of::<Payload>()];
         set_affinity(Pid::this(), CpuSet::empty().insert(1)).unwrap();
         set_fifo(Pid::this(), 95).unwrap();
 
@@ -193,8 +202,10 @@ fn main() {
         while !stop_flag.load(Ordering::Relaxed) {
             if let Ok((len, _)) = p.try_recv(&mut buffer) {
                 let t_rx = now();
-                assert_eq!(len, 16);
-                let msg = Payload::from_bytes(&buffer);
+                assert_eq!(len, size_of::<Payload>());
+                // Zero-copy: interpret the received bytes directly as a
+                // `&Payload`, no copy into an owned struct.
+                let msg = Payload::ref_from_bytes(&buffer[..len]).unwrap();
                 if last_idx != Some(msg.idx) {
                     last_idx = Some(msg.idx);
                     // Keep full nanosecond precision (no lossy us round-trip).
@@ -214,15 +225,20 @@ fn main() {
             mma.insert(lat as i64);
         }
         let mma_state = mma.collect();
+        // Higher latency implies lower throughput, so min/max latency map to
+        // max/min throughput respectively.
+        let tp_avg = throughput_gbps(BYTES_PER_ROUNDTRIP, mma_state.avg);
+        let tp_min = throughput_gbps(BYTES_PER_ROUNDTRIP, mma_state.max);
+        let tp_max = throughput_gbps(BYTES_PER_ROUNDTRIP, mma_state.min);
         if mma_state.max > 1000.0 {
             warn!(
-                "min:{:6.1}ns avg:{:6.1}ns max:{:6.1}ns",
-                mma_state.min, mma_state.avg, mma_state.max,
+                "min:{:6.1}ns avg:{:6.1}ns max:{:6.1}ns | throughput min:{:6.2}GB/s avg:{:6.2}GB/s max:{:6.2}GB/s",
+                mma_state.min, mma_state.avg, mma_state.max, tp_min, tp_avg, tp_max,
             );
         } else if mma_state.max >= 10.0 {
             info!(
-                "min:{:6.1}ns avg:{:6.1}ns max:{:6.1}ns",
-                mma_state.min, mma_state.avg, mma_state.max,
+                "min:{:6.1}ns avg:{:6.1}ns max:{:6.1}ns | throughput min:{:6.2}GB/s avg:{:6.2}GB/s max:{:6.2}GB/s",
+                mma_state.min, mma_state.avg, mma_state.max, tp_min, tp_avg, tp_max,
             );
         }
 
