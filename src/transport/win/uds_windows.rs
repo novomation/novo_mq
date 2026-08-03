@@ -579,11 +579,7 @@ where
             log::info!("Connection loss detected");
             return Err(SendError::ConnectionEnded);
         }
-        let mut data = T::default();
-        let dst = data.as_mut();
-        let len = buf.len().min(dst.len());
-        dst[..len].copy_from_slice(&buf[..len]);
-        self.writer.write((len, data));
+        self.writer.write_bytes(buf);
         Ok(buf.len())
     }
 
@@ -592,16 +588,13 @@ where
             log::info!("Connection loss detected");
             return Ok(0);
         }
-        match self.reader.try_read() {
-            Some((len, data)) => {
-                let src = &data.as_ref()[..len];
-                if len > buf.len() {
-                    buf.copy_from_slice(&src[..buf.len()]);
-                    return Err(ReceiveError::ExternalBufferToSmall((buf.len(), len)));
-                }
-                buf[..len].copy_from_slice(src);
-                Ok(len)
+        // Copy directly out of the shared-memory slot instead of cloning the
+        // full `(usize, T)` value onto the stack first.
+        match self.reader.read_bytes(buf) {
+            Some(len) if len > buf.len() => {
+                Err(ReceiveError::ExternalBufferToSmall((buf.len(), len)))
             }
+            Some(len) => Ok(len),
             None => Err(ReceiveError::NoMessageAvailable),
         }
     }

@@ -1,5 +1,5 @@
 use crate::{
-    ReceiveError,
+    ReceiveError::{self, InternalBufferToSmall},
     SendError::{self},
     helpers::set_calling_thread_to_nrt,
     transport::{
@@ -7,9 +7,12 @@ use crate::{
     },
 };
 use memmap2::MmapMut;
-use nix::sys::{
-    epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags, EpollTimeout},
-    eventfd::{EfdFlags, EventFd},
+use nix::{
+    errno::Errno::ENOMEM,
+    sys::{
+        epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags, EpollTimeout},
+        eventfd::{EfdFlags, EventFd},
+    },
 };
 use nix::{
     errno::Errno::{EAGAIN, EALREADY, ECONNREFUSED, ECONNRESET, EINPROGRESS, ENOENT, EPIPE},
@@ -408,11 +411,15 @@ where
             log::info!("Connection loss detected");
             return Err(ECONNRESET);
         }
-        let mut data = T::default();
-        let dst = data.as_mut();
-        let len = buf.len().min(dst.len());
-        dst[..len].copy_from_slice(&buf[..len]);
-        self.writer.write((len, data));
+        let copied = self.writer.write_bytes(buf);
+        if copied < buf.len() {
+            log::error!(
+                "Error: buffer to small buf({}) > dst({})",
+                buf.len(),
+                copied
+            );
+            return Err(ENOMEM);
+        }
         Ok(buf.len())
     }
 
@@ -426,16 +433,13 @@ where
             log::info!("Connection loss detected");
             return Ok(0);
         }
-        match self.reader.try_read() {
-            Some((len, data)) => {
-                let src = &data.as_ref()[..len];
-                if len > buf.len() {
-                    buf.copy_from_slice(&src[..buf.len()]);
-                    return Err(ReceiveError::ExternalBufferToSmall((buf.len(), len)));
-                }
-                buf[..len].copy_from_slice(src);
-                Ok(len)
+        // Copy directly out of the shared-memory slot instead of cloning the
+        // full `(usize, T)` value onto the stack first.
+        match self.reader.read_bytes(buf) {
+            Some(len) if len > buf.len() => {
+                Err(ReceiveError::ExternalBufferToSmall((buf.len(), len)))
             }
+            Some(len) => Ok(len),
             None => Err(ReceiveError::NoMessageAvailable),
         }
     }

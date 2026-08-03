@@ -123,7 +123,7 @@ pub struct MinMaxAvg {
     pub avg: f64,
 }
 
-type TbTrans = TbTransport<Payload>;
+type TbTrans = TbTransport<[u8; 16]>;
 
 fn main() {
     let _ = mlockall(MmanFlags::MCL_CURRENT | MmanFlags::MCL_FUTURE)
@@ -150,7 +150,7 @@ fn main() {
             p.wait_for_subscribers(1);
             rx_bounded.store(true, Ordering::Relaxed);
 
-            set_affinity(Pid::this(), CpuSet::empty().insert(2)).unwrap();
+            set_affinity(Pid::this(), CpuSet::empty().insert(0)).unwrap();
             set_fifo(Pid::this(), 95).unwrap();
 
             info!("TX ready");
@@ -181,7 +181,7 @@ fn main() {
         p.wait_until_connected();
 
         let mut buffer = [0u8; 1000];
-        set_affinity(Pid::this(), CpuSet::empty().insert(3)).unwrap();
+        set_affinity(Pid::this(), CpuSet::empty().insert(1)).unwrap();
         set_fifo(Pid::this(), 95).unwrap();
 
         info!("RX ready");
