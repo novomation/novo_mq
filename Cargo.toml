@@ -31,6 +31,9 @@ nix = { version = "0.31", features = ["socket", "fs", "uio", "event"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Networking_WinSock",
+    "Win32_Security",
+    "Win32_System_IO",
+    "Win32_System_Memory",
 ] }
 
 [dev-dependencies]
@@ -48,4 +51,8 @@ harness = false
 
 [[bench]]
 name = "long_term"
+harness = false
+
+[[bench]]
+name = "long_term_tb"
 harness = false

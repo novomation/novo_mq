@@ -80,7 +80,7 @@ mod tests {
             BulkTransport, TbTransport, TbTransportConfig, UnixDatagram, UnixDatagramListener,
         },
     };
-    use log::{error, info, warn};
+    use log::{debug, error, info, warn};
     use std::{
         sync::{Arc, atomic::AtomicBool, mpsc::Receiver},
         thread::JoinHandle,
@@ -198,7 +198,7 @@ mod tests {
                         Ok(conn) => {
                             let _ = tx.send(Box::new(conn));
                         }
-                        Err(TransportError::WouldBlock) => warn!("WB"),
+                        Err(TransportError::WouldBlock) => debug!("WB"),
                         Err(err) => error!("Accept error: {err}"),
                     }
                     std::thread::sleep(Duration::from_millis(100));
@@ -215,7 +215,10 @@ mod tests {
     #[test]
     fn connect_on_closed_socket() {
         let (addr, _, ct, join) = spawn_server::<()>();
+        std::thread::sleep(Duration::from_millis(500));
+
         let _client = UnixDatagram::<()>::connect(&addr, ()).unwrap();
+
         ct.cancel();
         join.join().unwrap();
         assert_eq!(
@@ -226,12 +229,15 @@ mod tests {
 
     #[test]
     fn connect_on_closed_socket_tb() {
-        let (addr, _, ct, join) = spawn_server::<TbTransp>();
+        let (addr, con, ct, join) = spawn_server::<TbTransp>();
+        std::thread::sleep(Duration::from_millis(500));
+
         let _client = UnixDatagram::<TbTransp>::connect(&addr, TbTransportConfig::new()).unwrap();
+        drop(con);
         ct.cancel();
         join.join().unwrap();
         assert_eq!(
-            UnixDatagram::<()>::connect(&addr, ()).unwrap_err(),
+            UnixDatagram::<TbTransp>::connect(&addr, TbTransportConfig::new()).unwrap_err(),
             TransportError::PeerDoesNotExist
         );
     }

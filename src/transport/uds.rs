@@ -38,6 +38,59 @@ pub fn set_nonblock(fd: nix::libc::c_int) -> Result<(), nix::errno::Errno> {
     }
 }
 
+pub mod shm_helpers {
+    use crate::TransportError;
+    use nix::cmsg_space;
+    use nix::sys::memfd::{MFdFlags, memfd_create};
+    use nix::sys::socket::{ControlMessage, ControlMessageOwned, MsgFlags, recvmsg, sendmsg};
+    use nix::unistd::ftruncate;
+    use std::io::{IoSlice, IoSliceMut};
+    use std::os::fd::{AsFd, FromRawFd, OwnedFd, RawFd};
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum FdPassError {
+        #[error("nix error: {0}")]
+        Nix(#[from] nix::Error),
+        #[error("no file descriptor received")]
+        NoFd,
+        #[error("unexpected ancillary data")]
+        UnexpectedAncillaryData,
+    }
+
+    pub fn send_memfd(sock: RawFd, fd: RawFd) -> Result<(), FdPassError> {
+        let data = [0u8; 1];
+        let iov = [IoSlice::new(&data)];
+        let fds = [fd];
+        let cmsg = [ControlMessage::ScmRights(&fds)];
+        sendmsg::<()>(sock, &iov, &cmsg, MsgFlags::empty(), None)?;
+        Ok(())
+    }
+
+    pub fn recv_memfd(sock: RawFd) -> Result<OwnedFd, FdPassError> {
+        let mut data = [0u8; 1];
+        let mut iov = [IoSliceMut::new(&mut data)];
+        let mut cmsgspace = cmsg_space!([RawFd; 1]);
+        let msg = recvmsg::<()>(sock, &mut iov, Some(&mut cmsgspace), MsgFlags::empty())?;
+        for cmsg in msg.cmsgs()? {
+            if let ControlMessageOwned::ScmRights(fds) = cmsg {
+                if let Some(&fd) = fds.first() {
+                    // SAFETY:
+                    // The fd was received from SCM_RIGHTS and ownership
+                    // is transferred to us.
+                    return Ok(unsafe { OwnedFd::from_raw_fd(fd) });
+                }
+            }
+        }
+        Err(FdPassError::NoFd)
+    }
+
+    pub fn create_memfd(size: usize, name: &str) -> Result<OwnedFd, TransportError> {
+        let fd = memfd_create(name, MFdFlags::MFD_CLOEXEC)?;
+        ftruncate(fd.as_fd(), size as i64)?;
+        Ok(fd)
+    }
+}
+
 /// Hook for attaching connection-specific state/behaviour (e.g. a shared-memory
 /// mapping negotiated over the socket) to a plain [`UnixDatagram`].
 ///
@@ -223,7 +276,7 @@ where
     fn on_accept(fd: RawFd) -> Result<Self, TransportError> {
         let conn_is_lost = connection_monitor().register(fd);
         // Channel A: this side writes, peer reads.
-        let writer_memfd = triple_buffer::create_memfd(
+        let writer_memfd = shm_helpers::create_memfd(
             triple_buffer::required_size::<(usize, T)>(),
             &uuid::Uuid::new_v4().to_string(),
         )
@@ -232,7 +285,7 @@ where
         let (writer, _) = unsafe { triple_buffer::triple_buffer(writer_mmap.as_mut_ptr()) };
 
         // Channel B: peer writes, this side reads.
-        let reader_memfd = triple_buffer::create_memfd(
+        let reader_memfd = shm_helpers::create_memfd(
             triple_buffer::required_size::<(usize, T)>(),
             &uuid::Uuid::new_v4().to_string(),
         )
@@ -241,8 +294,8 @@ where
         let (_, reader) = unsafe { triple_buffer::triple_buffer(reader_mmap.as_mut_ptr()) };
 
         // Send channel A fd first, then channel B fd.
-        triple_buffer::send_memfd(fd, writer_memfd.as_raw_fd()).unwrap();
-        triple_buffer::send_memfd(fd, reader_memfd.as_raw_fd()).unwrap();
+        shm_helpers::send_memfd(fd, writer_memfd.as_raw_fd()).unwrap();
+        shm_helpers::send_memfd(fd, reader_memfd.as_raw_fd()).unwrap();
 
         log::info!(
             "Allocated 2*{} bytes for bidirectional shared-memory transport",
@@ -262,7 +315,7 @@ where
     fn on_connect(fd: RawFd, config: Self::Config) -> Result<Self, TransportError> {
         let recv = || -> Result<OwnedFd, TransportError> {
             loop {
-                match triple_buffer::recv_memfd(fd.as_raw_fd()) {
+                match shm_helpers::recv_memfd(fd.as_raw_fd()) {
                     Ok(owned) => return Ok(owned),
                     Err(triple_buffer::FdPassError::Nix(nix::errno::Errno::EAGAIN)) => {
                         std::thread::sleep(std::time::Duration::from_millis(10));
