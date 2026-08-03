@@ -115,7 +115,7 @@ fn main() {
             info!("TX Spawned");
 
             // let mut tx_times = Vec::with_capacity(30_000);
-            let datalayer = Datalayer::open("domain").unwrap();
+            let datalayer: Datalayer = Datalayer::open("domain").unwrap();
             let mut p = datalayer.publisher("topic").unwrap();
             p.wait_for_subscribers(1);
             rx_bounded.store(true, Ordering::Relaxed);
@@ -144,8 +144,8 @@ fn main() {
         info!("RX Spawned");
 
         // let mut rx_times = Vec::with_capacity(30_000);
-        let datalayer = Datalayer::open("domain").unwrap();
-        let mut p: Subscriber = datalayer.subscriber("topic").unwrap();
+        let datalayer: Datalayer = Datalayer::open("domain").unwrap();
+        let mut p = datalayer.subscriber("topic", ()).unwrap();
         p.wait_until_connected();
 
         let mut buffer = [0u8; 1000];

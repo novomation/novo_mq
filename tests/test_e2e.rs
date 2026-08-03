@@ -5,7 +5,7 @@ use test_log::test;
 #[test]
 fn test_reconnect_of_subscriber() {
     let tx = std::thread::spawn(|| {
-        let dl = Datalayer::open("test_reconnect_of_subscriber").unwrap();
+        let dl: Datalayer = Datalayer::open("test_reconnect_of_subscriber").unwrap();
         let mut pl = dl.publisher("my_topic").unwrap();
         pl.wait_for_subscribers(1);
         for _i in 0..10 {
@@ -14,7 +14,7 @@ fn test_reconnect_of_subscriber() {
         }
     });
     let rx = std::thread::spawn(|| {
-        let dl = Datalayer::open("test_reconnect_of_subscriber").unwrap();
+        let dl: Datalayer = Datalayer::open("test_reconnect_of_subscriber").unwrap();
         {
             let mut sub = dl.subscriber("my_topic", ()).unwrap();
             sub.wait_until_connected();

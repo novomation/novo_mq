@@ -1,14 +1,6 @@
 use crossbeam_utils::CachePadded;
-use nix::cmsg_space;
-use nix::sys::memfd::{MFdFlags, memfd_create};
-use nix::sys::socket::{ControlMessage, ControlMessageOwned, MsgFlags, recvmsg, sendmsg};
-use nix::unistd::ftruncate;
 use std::cell::UnsafeCell;
-use std::io::{IoSlice, IoSliceMut};
-use std::os::fd::{AsFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicUsize, Ordering};
-
-use crate::TransportError;
 
 const NEW_DATA_FLAG: usize = 0b100;
 const INDEX_MASK: usize = 0b011;
@@ -173,7 +165,6 @@ mod test {
     fn smoke() {
         let (mut w, mut r) = new_buffer();
         w.write([0; 15]);
-
         assert_eq!(w.try_read(), Some([0; 15]));
         assert_eq!(r.try_read(), Some([0; 15]));
     }
@@ -185,47 +176,4 @@ mod test {
         w.write(vec![0; 15]);
         assert_eq!(r.try_read(), Some(vec![0; 15]));
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum FdPassError {
-    #[error("nix error: {0}")]
-    Nix(#[from] nix::Error),
-    #[error("no file descriptor received")]
-    NoFd,
-    #[error("unexpected ancillary data")]
-    UnexpectedAncillaryData,
-}
-
-pub fn send_memfd(sock: RawFd, fd: RawFd) -> Result<(), FdPassError> {
-    let data = [0u8; 1];
-    let iov = [IoSlice::new(&data)];
-    let fds = [fd];
-    let cmsg = [ControlMessage::ScmRights(&fds)];
-    sendmsg::<()>(sock, &iov, &cmsg, MsgFlags::empty(), None)?;
-    Ok(())
-}
-
-pub fn recv_memfd(sock: RawFd) -> Result<OwnedFd, FdPassError> {
-    let mut data = [0u8; 1];
-    let mut iov = [IoSliceMut::new(&mut data)];
-    let mut cmsgspace = cmsg_space!([RawFd; 1]);
-    let msg = recvmsg::<()>(sock, &mut iov, Some(&mut cmsgspace), MsgFlags::empty())?;
-    for cmsg in msg.cmsgs()? {
-        if let ControlMessageOwned::ScmRights(fds) = cmsg {
-            if let Some(&fd) = fds.first() {
-                // SAFETY:
-                // The fd was received from SCM_RIGHTS and ownership
-                // is transferred to us.
-                return Ok(unsafe { OwnedFd::from_raw_fd(fd) });
-            }
-        }
-    }
-    Err(FdPassError::NoFd)
-}
-
-pub fn create_memfd(size: usize, name: &str) -> Result<OwnedFd, TransportError> {
-    let fd = memfd_create(name, MFdFlags::MFD_CLOEXEC)?;
-    ftruncate(fd.as_fd(), size as i64)?;
-    Ok(fd)
 }
