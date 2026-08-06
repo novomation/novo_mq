@@ -3,7 +3,8 @@ use crate::{
     SendError::{self},
     helpers::set_calling_thread_to_nrt,
     transport::{
-        MAX_CONNECTIONS, TransportConnection, TransportError, TransportListener, triple_buffer,
+        MAX_CONNECTIONS, TransportConnection, TransportError, TransportListener,
+        triple_buffer::{self, required_size},
     },
 };
 use memmap2::MmapMut;
@@ -411,6 +412,16 @@ where
             log::info!("Connection loss detected");
             return Err(ECONNRESET);
         }
+        let size = std::mem::size_of::<T>();
+        if buf.len() != size {
+            log::error!(
+                "Error: buf.len() ({}), does not match triple_buffer slot size ({}) set with T in TbTransport<T>",
+                buf.len(),
+                size
+            );
+            return Err(ENOMEM);
+        }
+
         let copied = self.writer.write_bytes(buf);
         if copied < buf.len() {
             log::error!(
@@ -435,6 +446,15 @@ where
         }
         // Copy directly out of the shared-memory slot instead of cloning the
         // full `(usize, T)` value onto the stack first.
+        let size = std::mem::size_of::<T>();
+        if buf.len() != size {
+            log::error!(
+                "Error: buf.len() ({}), does not match triple_buffer slot size ({}) set with T in TbTransport<T>",
+                buf.len(),
+                size
+            );
+            return Err(ReceiveError::ExternalBufferToSmall((buf.len(), size)));
+        }
         match self.reader.read_bytes(buf) {
             Some(len) if len > buf.len() => {
                 Err(ReceiveError::ExternalBufferToSmall((buf.len(), len)))
