@@ -1,10 +1,11 @@
+pub use crate::transport::triple_buffer::ByteInit;
 use crate::{
-    ReceiveError::{self, InternalBufferToSmall},
+    ReceiveError::{self},
     SendError::{self},
     helpers::set_calling_thread_to_nrt,
     transport::{
         MAX_CONNECTIONS, TransportConnection, TransportError, TransportListener,
-        triple_buffer::{self, required_size},
+        triple_buffer::{self},
     },
 };
 use memmap2::MmapMut;
@@ -272,11 +273,12 @@ fn run_connection_monitor(rx: mpsc::Receiver<(RawFd, Arc<AtomicBool>)>, event_fd
     }
 }
 
-impl<T: Send> BulkTransport for TbTransport<T>
+impl<T> BulkTransport for TbTransport<T>
 where
-    T: Default + AsMut<[u8]> + AsRef<[u8]> + Clone + Sized,
+    T: Send + ByteInit + AsMut<[u8]> + AsRef<[u8]> + Clone + Sized,
 {
     type Config = TbTransportConfig;
+
     fn on_accept(fd: RawFd) -> Result<Self, TransportError> {
         let conn_is_lost = connection_monitor().register(fd);
         // Channel A: this side writes, peer reads.
@@ -368,16 +370,6 @@ where
             log::info!("Connection loss detected");
             return Err(ECONNRESET);
         }
-        let size = std::mem::size_of::<T>();
-        if buf.len() != size {
-            log::error!(
-                "Error: buf.len() ({}), does not match triple_buffer slot size ({}) set with T in TbTransport<T>",
-                buf.len(),
-                size
-            );
-            return Err(ENOMEM);
-        }
-
         let copied = self.writer.write_bytes(buf);
         if copied < buf.len() {
             log::error!(
@@ -402,15 +394,6 @@ where
         }
         // Copy directly out of the shared-memory slot instead of cloning the
         // full `(usize, T)` value onto the stack first.
-        let size = std::mem::size_of::<T>();
-        if buf.len() != size {
-            log::error!(
-                "Error: buf.len() ({}), does not match triple_buffer slot size ({}) set with T in TbTransport<T>",
-                buf.len(),
-                size
-            );
-            return Err(ReceiveError::ExternalBufferToSmall((buf.len(), size)));
-        }
         match self.reader.read_bytes(buf) {
             Some(len) if len > buf.len() => {
                 Err(ReceiveError::ExternalBufferToSmall((buf.len(), len)))
