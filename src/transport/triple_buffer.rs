@@ -138,6 +138,16 @@ pub struct Writer<T> {
 unsafe impl<T: Send> Send for Writer<T> {}
 unsafe impl<T: Send> Sync for Writer<T> {}
 
+pub trait ByteInit {
+    fn init() -> Self;
+}
+
+impl<const N: usize> ByteInit for [u8; N] {
+    fn init() -> Self {
+        [0; N]
+    }
+}
+
 impl<T> Writer<T> {
     pub fn new(raw_mem: *mut Shared<T>) -> Self {
         Writer {
@@ -189,14 +199,14 @@ impl<T> Writer<T> {
     #[inline]
     pub fn write_with<F>(&mut self, init: F)
     where
-        T: Default,
+        T: ByteInit,
         F: FnOnce(&mut T),
     {
         let idx = self.write_idx & INDEX_MASK;
         unsafe {
             let slot = (*self.shared).mem[idx].get();
             if (*slot).is_none() {
-                *slot = Some(T::default());
+                *slot = Some(T::init());
             }
             // Safety: we just ensured `*slot` is `Some(_)`.
             init((*slot).as_mut().unwrap_unchecked());
@@ -212,7 +222,13 @@ impl<T> Writer<T> {
     }
 }
 
-impl<T: AsMut<[u8]> + Default> Writer<(usize, T)> {
+impl<T: ByteInit> ByteInit for (usize, T) {
+    fn init() -> Self {
+        (std::mem::size_of::<T>(), T::init())
+    }
+}
+
+impl<T: AsMut<[u8]> + ByteInit> Writer<(usize, T)> {
     /// Copies `buf` directly into the next shared-memory slot as raw bytes
     /// (truncated to the slot's capacity), and publishes it as the newest
     /// value.

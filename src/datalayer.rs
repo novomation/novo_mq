@@ -1,4 +1,4 @@
-pub use crate::transport::uds::{BulkTransport, TbTransport, TbTransportConfig};
+pub use crate::transport::uds::{BulkTransport, ByteInit, TbTransport, TbTransportConfig};
 use crate::{publisher::Publisher, subscriber::Subscriber, transport::TransportError};
 use log::{debug, warn};
 use std::path::{Path, PathBuf};

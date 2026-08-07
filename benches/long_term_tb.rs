@@ -1,9 +1,6 @@
 use log::{debug, info, warn};
-use novomq::{
-    datalayer::{Datalayer, TbTransport, TbTransportConfig},
-    subscriber::Subscriber,
-};
-const NO_BYTES: usize = 16;
+use novomq::datalayer::{self, Datalayer, TbTransport, TbTransportConfig};
+const NO_BYTES: usize = 100_000;
 use rt_tunex::{
     clock::{ClockId, get_time},
     mman::{MmanFlags, mlockall},
@@ -29,11 +26,11 @@ struct Payload {
     bytes: [u8; NO_BYTES],
 }
 
-impl Default for Payload {
+impl datalayer::ByteInit for Payload {
     // Manual impl: `#[derive(Default)]`/the std array impl only cover
     // arrays up to length 32, but `bytes` is NO_BYTES bytes; an explicit array
     // literal has no such limit.
-    fn default() -> Self {
+    fn init() -> Self {
         Payload {
             idx: 0,
             time: 0,
@@ -130,6 +127,7 @@ pub struct MinMaxAvg {
 }
 
 type TbTrans = TbTransport<Payload>;
+type TbTransR = TbTransport<Payload>;
 
 fn main() {
     let _ = mlockall(MmanFlags::MCL_CURRENT | MmanFlags::MCL_FUTURE)
@@ -200,21 +198,24 @@ fn main() {
         // message index so we only record latency for genuinely new messages.
         let mut last_idx: Option<u64> = None;
         while !stop_flag.load(Ordering::Relaxed) {
-            if let Ok((len, _)) = p.try_recv(&mut buffer) {
-                let t_rx = now();
-                assert_eq!(len, size_of::<Payload>());
-                // Zero-copy: interpret the received bytes directly as a
-                // `&Payload`, no copy into an owned struct.
-                let msg = Payload::ref_from_bytes(&buffer[..len]).unwrap();
-                if last_idx != Some(msg.idx) {
-                    last_idx = Some(msg.idx);
-                    // Keep full nanosecond precision (no lossy us round-trip).
-                    let latency = (t_rx - msg.time) as f64;
-                    tx_lat.try_send(latency).unwrap();
-                    // log::info!("Got msg");
-                } else {
-                    // log::info!("Got no msg");
+            match p.try_recv(&mut buffer) {
+                Ok((len, _)) => {
+                    let t_rx = now();
+                    assert_eq!(len, size_of::<Payload>());
+                    // Zero-copy: interpret the received bytes directly as a
+                    // `&Payload`, no copy into an owned struct.
+                    let msg = Payload::ref_from_bytes(&buffer[..len]).unwrap();
+                    if last_idx != Some(msg.idx) {
+                        last_idx = Some(msg.idx);
+                        // Keep full nanosecond precision (no lossy us round-trip).
+                        let latency = (t_rx - msg.time) as f64;
+                        tx_lat.try_send(latency).unwrap();
+                        // log::info!("Got msg");
+                    } else {
+                        // log::info!("Got no msg");
+                    }
                 }
+                Err(e) => log::error!("Error: {:?}", e),
             }
         }
         info!("RX Done");
