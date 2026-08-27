@@ -87,6 +87,27 @@ fn prepare_bind_path(addr: &str) -> Result<(), TransportError> {
     }
 }
 
+/// Sends `value` as raw bytes over `fd`. Used to exchange configuration
+/// values (e.g. the configured shared-memory buffer size) before the
+/// fd-passing handshake.
+fn send_usize(fd: RawFd, value: usize) -> Result<(), TransportError> {
+    socket::send(fd, &value.to_ne_bytes(), MsgFlags::empty()).map_err(TransportError::Os)?;
+    Ok(())
+}
+
+/// Receives a `usize` sent via [`send_usize`], retrying on `EAGAIN` since
+/// the socket is non-blocking.
+fn recv_usize(fd: RawFd) -> Result<usize, TransportError> {
+    let mut buf = [0u8; std::mem::size_of::<usize>()];
+    loop {
+        match socket::recv(fd, &mut buf, MsgFlags::empty()) {
+            Ok(_) => return Ok(usize::from_ne_bytes(buf)),
+            Err(EAGAIN) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Err(e) => return Err(TransportError::Os(e)),
+        }
+    }
+}
+
 pub mod shm_helpers {
     use crate::TransportError;
     use nix::cmsg_space;
@@ -324,7 +345,21 @@ where
     type Config = TbTransportConfig;
 
     fn on_accept(fd: RawFd) -> Result<Self, TransportError> {
+        // Before passing any file descriptors, make sure both sides were
+        // built with the same configured buffer size (`T`); otherwise the
+        // memfd-backed regions negotiated below would not agree on layout.
+        let our_size = size_of::<T>();
+        send_usize(fd.as_raw_fd(), our_size)?;
+        let peer_size = recv_usize(fd.as_raw_fd())?;
+        if peer_size != our_size {
+            return Err(TransportError::BufferSizeMismatch {
+                ours: our_size,
+                peer: peer_size,
+            });
+        }
+
         let conn_is_lost = connection_monitor().register(fd);
+
         // Channel A: this side writes, peer reads.
         let writer_memfd = shm_helpers::create_memfd(
             triple_buffer::required_size::<(usize, T)>(),
@@ -363,6 +398,19 @@ where
     }
 
     fn on_connect(fd: RawFd, config: Self::Config) -> Result<Self, TransportError> {
+        // Before passing any file descriptors, make sure both sides were
+        // built with the same configured buffer size (`T`); otherwise the
+        // memfd-backed regions negotiated below would not agree on layout.
+        let our_size = size_of::<T>();
+        let peer_size = recv_usize(fd.as_raw_fd())?;
+        send_usize(fd.as_raw_fd(), our_size)?;
+        if peer_size != our_size {
+            return Err(TransportError::BufferSizeMismatch {
+                ours: our_size,
+                peer: peer_size,
+            });
+        }
+
         let recv = || -> Result<OwnedFd, TransportError> {
             loop {
                 match shm_helpers::recv_memfd(fd.as_raw_fd()) {
@@ -529,9 +577,12 @@ impl<E: BulkTransport> TransportListener<UnixDatagram<E>> for UnixDatagramListen
         let ret = socket::accept(self.socket.as_raw_fd());
         match ret {
             Ok(fd) => {
-                let extra = E::on_accept(fd)?;
+                // Own the fd immediately so it's closed automatically if
+                // `on_accept` returns an error (e.g. buffer size mismatch).
+                let owned_fd = unsafe { OwnedFd::from_raw_fd(fd) };
+                let extra = E::on_accept(owned_fd.as_raw_fd())?;
                 Ok(UnixDatagram {
-                    socket: unsafe { OwnedFd::from_raw_fd(fd) },
+                    socket: owned_fd,
                     extra,
                 })
             }
