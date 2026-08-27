@@ -1,7 +1,4 @@
-pub use crate::transport::{
-    BulkTransport,
-    tb::{ByteInit, TbTransport, TbTransportConfig},
-};
+pub use crate::transport::BulkTransport;
 use crate::{TransportError, publisher::Publisher, subscriber::Subscriber};
 use log::{debug, warn};
 use std::path::{Path, PathBuf};
@@ -58,15 +55,7 @@ impl<T: BulkTransport + 'static> Drop for Datalayer<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        },
-        time::Duration,
-    };
-
-    use crate::transport::tb::TbTransport;
+    use std::time::Duration;
 
     use super::*;
     use test_log::test;
@@ -102,6 +91,24 @@ mod tests {
         // Check drop cleaned up!
         assert!(!Path::new("test_domain").exists());
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
+    };
+
+    use crate::transport::tb::{ByteInit, TbTransport, TbTransportConfig};
+
+    use super::*;
+    use test_log::test;
+
     #[test]
     fn it_works_tb() {
         let wait = Arc::new(AtomicBool::new(true));

@@ -160,12 +160,8 @@ impl<T> Debug for Subscriber<T> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{
-        publisher::Publisher,
-        transport::tb::{TbTransport, TbTransportConfig},
-    };
+    use crate::publisher::Publisher;
     use test_log::test;
-    type TbTransp = TbTransport<[u8; 24]>;
 
     // TOOD: Error hang
     //     197 |     UnexpectedAncillaryData,
@@ -224,6 +220,18 @@ mod test {
         let (len, _) = sub.try_recv(&mut buf).unwrap();
         println!("{:?}", String::from_utf8_lossy(&buf[0..len]));
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::{
+        publisher::Publisher,
+        transport::tb::{TbTransport, TbTransportConfig},
+    };
+    use test_log::test;
+    type TbTransp = TbTransport<[u8; 24]>;
 
     #[test]
     fn smoke_tb() {

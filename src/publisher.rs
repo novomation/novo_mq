@@ -194,10 +194,9 @@ mod test {
     use std::fs::{create_dir_all, remove_dir};
 
     use super::*;
-    use crate::{datalayer::TbTransport, topic::encode, transport::tb::TbTransportConfig};
+    use crate::topic::encode;
     use test_log::test;
 
-    type TbTransp = TbTransport<[u8; 24]>;
     #[test]
     fn smoke() {
         let mut publ = Publisher::<()>::new("", "topic").unwrap();
@@ -216,6 +215,16 @@ mod test {
         publ.try_send("iufvghj".as_bytes()).unwrap();
         publ.try_send("iufvghj".as_bytes()).unwrap();
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[cfg(test)]
+mod tb_test {
+    use super::*;
+    use crate::{datalayer::TbTransport, topic::encode, transport::tb::TbTransportConfig};
+    use test_log::test;
+
+    type TbTransp = TbTransport<[u8; 24]>;
 
     #[test]
     fn test_publisher_on_same_topic() {

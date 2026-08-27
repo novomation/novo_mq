@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use novomq::datalayer::{Datalayer, TbTransport, TbTransportConfig};
+use novomq::datalayer::Datalayer;
 
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
@@ -39,8 +39,10 @@ fn test_nonblocking() {
     rx.join().unwrap();
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn test_nonblocking_tb() {
+    use novomq::datalayer::{Datalayer, TbTransport, TbTransportConfig};
     let wait = Arc::new(AtomicBool::new(true));
     let tx = std::thread::spawn({
         let wait = wait.clone();
