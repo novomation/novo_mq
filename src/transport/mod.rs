@@ -12,9 +12,11 @@ pub mod uds;
 #[cfg(target_family = "windows")]
 pub mod win;
 #[cfg(target_family = "windows")]
+pub use uds::BulkTransport;
+#[cfg(target_family = "windows")]
 pub use win as uds;
 #[cfg(target_family = "windows")]
-pub use win::bt as uds;
+pub use win::tb;
 
 #[cfg(target_family = "unix")]
 pub type OsError = nix::Error;
