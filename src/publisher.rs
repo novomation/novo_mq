@@ -196,10 +196,9 @@ impl<T: BulkTransport + 'static> Debug for Publisher<T> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{datalayer::TbTransport, topic::encode, transport::tb::TbTransportConfig};
+    use crate::topic::encode;
     use test_log::test;
 
-    type TbTransp = TbTransport<[u8; 24]>;
     #[test]
     fn smoke() {
         let mut publ = Publisher::<()>::new("", "topic").unwrap();
@@ -218,6 +217,16 @@ mod test {
         publ.try_send("iufvghj".as_bytes()).unwrap();
         publ.try_send("iufvghj".as_bytes()).unwrap();
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[cfg(test)]
+mod tb_test {
+    use super::*;
+    use crate::{datalayer::TbTransport, topic::encode, transport::tb::TbTransportConfig};
+    use test_log::test;
+
+    type TbTransp = TbTransport<[u8; 24]>;
 
     #[test]
     fn smoke_tb() {
