@@ -23,6 +23,8 @@ pub enum TransportError {
     WouldBlock,
     #[error("TransportError {0}")]
     Os(#[from] OsError),
+    #[error("Configured buffer sizes do not match: ours={ours}, peer={peer}")]
+    BufferSizeMismatch { ours: usize, peer: usize },
 }
 
 #[derive(Error, Debug, PartialEq)]
@@ -88,6 +90,7 @@ mod tests {
     };
     use test_log::test;
     type TbTransp = TbTransport<[u8; 24]>;
+    type TbTranspWrongSize = TbTransport<[u8; 26]>;
 
     #[test]
     fn test_bind() {
@@ -173,6 +176,51 @@ mod tests {
                 break connection;
             }
         };
+        clinet_handle.join().unwrap();
+    }
+
+    #[test]
+    fn wrong_peer_buffer_size() {
+        let sock_addr = uuid::Uuid::new_v4().to_string();
+
+        let mut listener = UnixDatagramListener::<TbTransp>::bind(&sock_addr).unwrap();
+        let clinet_handle = std::thread::spawn({
+            let sock_addr = sock_addr.clone();
+            move || {
+                let ret = UnixDatagram::<TbTranspWrongSize>::connect(
+                    &sock_addr,
+                    TbTransportConfig::new(),
+                )
+                .unwrap_err();
+                assert_eq!(
+                    ret,
+                    TransportError::BufferSizeMismatch { ours: 26, peer: 24 }
+                );
+
+                let client =
+                    UnixDatagram::<TbTransp>::connect(&sock_addr, TbTransportConfig::new())
+                        .unwrap();
+                assert_eq!(client.peer_addr(), Some(sock_addr));
+            }
+        });
+        let mut con_counter = 0u8;
+        loop {
+            match listener.accept() {
+                Ok(connection) => {
+                    con_counter += 1;
+                    assert_eq!(connection.local_addr(), Some(sock_addr.clone()));
+                    break;
+                }
+                Err(TransportError::WouldBlock) => {
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                Err(e) => {
+                    con_counter += 1;
+                    log::warn!("Err: {:?}", e);
+                }
+            }
+        }
+        assert_eq!(con_counter, 2);
         clinet_handle.join().unwrap();
     }
 

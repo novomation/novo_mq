@@ -12,7 +12,7 @@ pub struct Shared<T: Sized> {
     // line; since the writer and reader almost always touch *different*
     // slots concurrently, that causes false sharing (needless cross-core
     // cache-line invalidation) on every write/read.
-    mem: [CachePadded<UnsafeCell<Option<T>>>; 3],
+    mem: [UnsafeCell<Option<T>>; 3],
     latest_free: CachePadded<AtomicUsize>,
 }
 
@@ -20,9 +20,9 @@ impl<T> Shared<T> {
     fn new() -> Self {
         Shared {
             mem: [
-                CachePadded::new(UnsafeCell::new(None)),
-                CachePadded::new(UnsafeCell::new(None)),
-                CachePadded::new(UnsafeCell::new(None)),
+                UnsafeCell::new(None),
+                UnsafeCell::new(None),
+                UnsafeCell::new(None),
             ],
             latest_free: CachePadded::new(0.into()),
         }
