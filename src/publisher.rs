@@ -3,8 +3,8 @@ use crate::{
     helpers::set_calling_thread_to_nrt,
     topic::socket_path,
     transport::{
-        SendError, TransportConnection, TransportError, TransportListener,
-        uds::{BulkTransport, UnixDatagram, UnixDatagramListener},
+        BulkTransport, SendError, TransportConnection, TransportError, TransportListener,
+        uds::{UnixDatagram, UnixDatagramListener},
     },
 };
 use log::{debug, error, info};
@@ -196,7 +196,7 @@ impl<T: BulkTransport + 'static> Debug for Publisher<T> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{datalayer::TbTransport, topic::encode, transport::uds::TbTransportConfig};
+    use crate::{datalayer::TbTransport, topic::encode, transport::tb::TbTransportConfig};
     use test_log::test;
 
     type TbTransp = TbTransport<[u8; 24]>;

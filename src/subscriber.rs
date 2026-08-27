@@ -3,8 +3,7 @@ use crate::{
     helpers::set_calling_thread_to_nrt,
     topic::socket_path,
     transport::{
-        ReceiveError, TransportConnection, TransportError,
-        uds::{BulkTransport, UnixDatagram},
+        BulkTransport, ReceiveError, TransportConnection, TransportError, uds::UnixDatagram,
     },
 };
 use log::{debug, info, trace, warn};
@@ -160,7 +159,7 @@ mod test {
     use super::*;
     use crate::{
         publisher::Publisher,
-        transport::uds::{TbTransport, TbTransportConfig},
+        transport::tb::{TbTransport, TbTransportConfig},
     };
     use test_log::test;
     type TbTransp = TbTransport<[u8; 24]>;
