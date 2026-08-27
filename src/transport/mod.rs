@@ -1,5 +1,5 @@
 use thiserror::Error;
-pub mod triple_buffer;
+pub mod algos;
 #[cfg(target_family = "unix")]
 pub mod uds;
 #[cfg(target_family = "windows")]
