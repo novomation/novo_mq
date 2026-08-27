@@ -1,11 +1,11 @@
-pub use crate::transport::triple_buffer::ByteInit;
+pub use crate::transport::algos::triple_buffer::ByteInit;
 use crate::{
     ReceiveError::{self},
     SendError::{self},
     helpers::set_calling_thread_to_nrt,
     transport::{
         MAX_CONNECTIONS, TransportConnection, TransportError, TransportListener,
-        triple_buffer::{self},
+        algos::triple_buffer,
     },
 };
 use memmap2::MmapMut;
