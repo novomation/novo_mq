@@ -7,10 +7,14 @@ use crate::{
     },
 };
 use nix::{
-    errno::Errno::{EAGAIN, EALREADY, ECONNREFUSED, ECONNRESET, EINPROGRESS, ENOENT, EPIPE},
+    errno::Errno::{
+        EAGAIN, EALREADY, ECONNREFUSED, ECONNRESET, EINPROGRESS, ENOENT, ENOSPC, EPIPE,
+    },
     sys::socket::{self, AddressFamily, Backlog, MsgFlags, SockFlag, SockType, UnixAddr},
     sys::stat::{SFlag, lstat},
 };
+#[cfg(target_os = "macos")]
+use nix::errno::Errno::EPIPE;
 #[cfg(not(target_os = "macos"))]
 use nix::sys::socket::RecvMsg;
 use std::{
@@ -408,6 +412,7 @@ impl<E: BulkTransport> TransportConnection for UnixDatagram<E> {
             // In both cases the connection is gone and callers should reconnect instead of
             // treating the send as an unexpected transport failure.
             Err(ECONNRESET) | Err(EPIPE) => Err(SendError::ConnectionEnded),
+            Err(ENOSPC) => Err(SendError::OsBufferFull),
             Err(err) => Err(SendError::OsError(err)),
         }
     }

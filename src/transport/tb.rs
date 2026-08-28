@@ -30,14 +30,14 @@ use std::{
 /// Sends `value` as raw bytes over `fd`. Used to exchange configuration
 /// values (e.g. the configured shared-memory buffer size) before the
 /// fd-passing handshake.
-fn send_usize(fd: RawFd, value: usize) -> Result<(), TransportError> {
+pub(crate) fn send_usize(fd: RawFd, value: usize) -> Result<(), TransportError> {
     socket::send(fd, &value.to_ne_bytes(), MsgFlags::empty()).map_err(TransportError::Os)?;
     Ok(())
 }
 
 /// Receives a `usize` sent via [`send_usize`], retrying on `EAGAIN` since
 /// the socket is non-blocking.
-fn recv_usize(fd: RawFd) -> Result<usize, TransportError> {
+pub(crate) fn recv_usize(fd: RawFd) -> Result<usize, TransportError> {
     let mut buf = [0u8; std::mem::size_of::<usize>()];
     loop {
         match socket::recv(fd, &mut buf, MsgFlags::empty()) {
@@ -138,7 +138,7 @@ impl TbTransportConfig {
 
     /// Registers `fd` with the monitor thread and returns the flag that will
     /// be set to `true` once the peer's connection is detected as lost.
-    fn register(&self, fd: RawFd) -> Arc<AtomicBool> {
+    pub(crate) fn register(&self, fd: RawFd) -> Arc<AtomicBool> {
         let conn_is_lost = Arc::new(AtomicBool::new(false));
         if self.fd_queue.send((fd, conn_is_lost.clone())).is_err() {
             log::error!("Connection monitor thread is gone; not tracking fd {fd}");
@@ -159,7 +159,7 @@ impl Default for TbTransportConfig {
 /// Lazily starts the single background thread that detects connection loss
 /// (via `epoll`) for every `TbTransport` connection, and returns a cloneable
 /// handle to it.
-fn connection_monitor() -> &'static TbTransportConfig {
+pub(crate) fn connection_monitor() -> &'static TbTransportConfig {
     static MONITOR: OnceLock<TbTransportConfig> = OnceLock::new();
     MONITOR.get_or_init(|| {
         let (fd_queue, rx) = mpsc::channel();

@@ -262,3 +262,36 @@ mod tb_test {
         publ.try_send("iufvghj".as_bytes()).unwrap();
     }
 }
+
+#[cfg(target_os = "linux")]
+#[cfg(test)]
+mod spsc_test {
+    use super::*;
+    use crate::{datalayer::SpscTransport, topic::encode, transport::spsc::SpscTransportConfig};
+    use test_log::test;
+
+    type SpscTransp = SpscTransport<[u8; 24], 4>;
+
+    #[test]
+    fn smoke_spsc() {
+        let mut publ = Publisher::<SpscTransp>::new("", "topic_spfc").unwrap();
+
+        publ.try_send("message".as_bytes()).unwrap();
+
+        let sub = UnixDatagram::<SpscTransp>::connect(
+            encode(&publ.topic).as_str(),
+            SpscTransportConfig::new(),
+        )
+        .unwrap();
+
+        publ.wait_for_subscribers(1);
+        publ.try_send("message".as_bytes()).unwrap();
+
+        drop(sub);
+
+        publ.wait_for_subscribers(1);
+
+        publ.try_send("iufvghj".as_bytes()).unwrap();
+        publ.try_send("iufvghj".as_bytes()).unwrap();
+    }
+}

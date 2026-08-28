@@ -1,6 +1,8 @@
 pub use crate::transport::BulkTransport;
 #[cfg(not(target_os = "macos"))]
 pub use crate::transport::tb::{ByteInit, TbTransport, TbTransportConfig};
+#[cfg(target_os = "linux")]
+pub use crate::transport::spsc::{SpscTransport, SpscTransportConfig};
 
 use crate::{TransportError, publisher::Publisher, subscriber::Subscriber};
 use log::{debug, warn};
@@ -149,5 +151,64 @@ mod tests_tb {
         rx.join().unwrap();
         // Check drop cleaned up!
         assert!(!Path::new("test_domain1").exists());
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[cfg(test)]
+mod tests_spsc {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
+    };
+
+    use crate::transport::spsc::{SpscTransport, SpscTransportConfig};
+
+    use super::*;
+    use test_log::test;
+
+    type SpscTransp = SpscTransport<[u8; 30], 4>;
+
+    #[test]
+    fn it_works_spsc() {
+        let wait = Arc::new(AtomicBool::new(true));
+        let tx = std::thread::spawn({
+            let wait = wait.clone();
+            move || {
+                let dl: Datalayer<SpscTransp> = Datalayer::open("test_domain_spsc").unwrap();
+                let mut pl = dl.publisher("my_topic").unwrap();
+                pl.wait_for_subscribers(1);
+                let ret = pl.try_send("my_message".as_bytes());
+                log::info!("Send worked: ${:?}", ret);
+                while wait.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(1000));
+                }
+            }
+        });
+        let rx = std::thread::spawn(move || {
+            let dl: Datalayer<SpscTransp> = Datalayer::open("test_domain_spsc").unwrap();
+            let mut sub = dl.subscriber("my_topic", SpscTransportConfig::new()).unwrap();
+            std::thread::sleep(Duration::from_millis(1000));
+            sub.wait_until_connected();
+            let mut buf = [0u8; 500];
+            loop {
+                if let Ok((len, _)) = sub.try_recv(&mut buf) {
+                    let msg = String::from_utf8_lossy(&buf[0..len]).to_string();
+                    assert_eq!(msg, "my_message");
+                    wait.store(false, Ordering::Relaxed);
+                    break;
+                } else {
+                    println!("Waiting for message.");
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        });
+        tx.join().unwrap();
+        rx.join().unwrap();
+        // Check drop cleaned up!
+        assert!(!Path::new("test_domain_spsc").exists());
     }
 }
