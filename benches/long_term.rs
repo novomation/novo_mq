@@ -151,8 +151,9 @@ fn main() {
             p.wait_for_subscribers(1);
             rx_bounded.store(true, Ordering::Relaxed);
 
-            set_affinity(Pid::this(), CpuSet::empty().insert(2)).unwrap();
-            set_fifo(Pid::this(), 95).unwrap();
+            let _ = set_affinity(Pid::this(), CpuSet::empty().insert(2))
+                .inspect_err(|err| log::warn!("Could not set affinity: {err}"));
+            let _ = set_fifo(Pid::this(), 95).inspect_err(|err| log::warn!("Could not set FIFO: {err}"));
 
             info!("TX ready");
             let mut i = 0;
@@ -183,8 +184,9 @@ fn main() {
         p.wait_until_connected();
 
         let mut buffer = [0u8; size_of::<Payload>()];
-        set_affinity(Pid::this(), CpuSet::empty().insert(3)).unwrap();
-        set_fifo(Pid::this(), 95).unwrap();
+        let _ = set_affinity(Pid::this(), CpuSet::empty().insert(3))
+            .inspect_err(|err| log::warn!("Could not set affinity: {err}"));
+        let _ = set_fifo(Pid::this(), 95).inspect_err(|err| log::warn!("Could not set FIFO: {err}"));
 
         info!("RX ready");
 

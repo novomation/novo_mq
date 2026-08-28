@@ -99,8 +99,9 @@ fn main() {
         .init();
     info!("Hello");
 
-    set_affinity(Pid::this(), CpuSet::empty().insert(0)).unwrap();
-    set_fifo(Pid::this(), 95).unwrap();
+    let _ = set_affinity(Pid::this(), CpuSet::empty().insert(0))
+        .inspect_err(|err| log::warn!("Could not set affinity: {err}"));
+    let _ = set_fifo(Pid::this(), 95).inspect_err(|err| log::warn!("Could not set FIFO: {err}"));
 
     // `src` stands in for the publisher's local `Payload`, `shared` for the
     // triple-buffer slot, `dst` for the subscriber's local receive buffer.
