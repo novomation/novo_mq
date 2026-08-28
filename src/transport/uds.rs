@@ -48,15 +48,22 @@ impl BulkTransport for () {
             // macOS has no SOCK_SEQPACKET, so the underlying SOCK_STREAM has no
             // message boundaries.  We emulate them by prepending an 8-byte
             // big-endian length on the wire.
-            let header = (buf.len() as u64).to_be_bytes();
-            let mut out = Vec::with_capacity(header.len() + buf.len());
-            out.extend_from_slice(&header);
+            let mut out = Vec::with_capacity(8 + buf.len());
+            out.extend_from_slice(&(buf.len() as u64).to_be_bytes());
             out.extend_from_slice(buf);
-            let n = socket::send(fd, &out, flags)?;
-            if n < header.len() {
-                return Err(nix::errno::Errno::EAGAIN);
+            let mut off = 0usize;
+            // `SOCK_STREAM` has no message boundaries. Drain the whole framed
+            // message so a send is all-or-nothing: this connection has exactly
+            // one writer thread, so looping until the bytes are queued is safe.
+            while off < out.len() {
+                match socket::send(fd, &out[off..], flags) {
+                    Ok(n) if n > 0 => off += n,
+                    Ok(_) => break,
+                    Err(EAGAIN) => std::thread::yield_now(),
+                    Err(err) => return Err(err),
+                }
             }
-            Ok(n - header.len())
+            Ok(buf.len())
         }
     }
 
@@ -95,38 +102,88 @@ impl BulkTransport for () {
         }
 
         #[cfg(target_os = "macos")]
-        {
-            let mut header = [0u8; 8];
-            read_full(socket, &mut header)?;
-            let msg_len = u64::from_be_bytes(header) as usize;
-            if msg_len > recv_buffer_len {
-                let mut oversized = vec![0u8; msg_len];
-                read_full(socket, &mut oversized)?;
-                recv_buffer.copy_from_slice(&oversized[..recv_buffer_len]);
-                Err(ReceiveError::ExternalBufferToSmall((recv_buffer_len, msg_len)))
-            } else {
-                read_full(socket, &mut recv_buffer[..msg_len])?;
-                Ok(msg_len)
-            }
-        }
+        return macos_try_recv_one(socket, recv_buffer, recv_buffer_len);
     }
 }
 
 #[cfg(target_os = "macos")]
-fn read_full(fd: RawFd, buf: &mut [u8]) -> Result<(), super::ReceiveError> {
-    let mut off = 0;
-    while off < buf.len() {
-        let n = socket::recv(fd, &mut buf[off..], MsgFlags::empty())
-            .map_err(|e| match e {
-                EAGAIN => super::ReceiveError::NoMessageAvailable,
-                other => super::ReceiveError::OsError(other),
-            })?;
-        if n == 0 {
+fn macos_try_recv_one(
+    fd: RawFd,
+    recv_buffer: &mut [u8],
+    recv_buffer_len: usize,
+) -> Result<usize, super::ReceiveError> {
+    // macOS has no SOCK_SEQPACKET, so the underlying SOCK_STREAM has no message
+    // boundaries: we emulate them with an 8-byte big-endian length prefix.
+    //
+    // A recv must be *atomic*: report "no message" only when one has not even
+    // started to arrive, and otherwise complete the whole framed message (spinning
+    // on EAGAIN). This never leaves a half-consumed header on the stream — the old
+    // best-effort reader returned NoMessageAvailable mid-body and permanently
+    // corrupted the connection.
+    const HDR: usize = 8;
+    let mut header = [0u8; HDR];
+    let mut off = 0usize;
+    loop {
+        match socket::recv(fd, &mut header[off..HDR], MsgFlags::empty()) {
+            Ok(0) => {
+                // Peer closed cleanly: if no message was in flight this mirrors
+                // SEQPACKET clean shutdown and reports 0 received bytes.
+                if off == 0 {
+                    return Ok(0);
+                }
+                return Err(ReceiveError::OsError(nix::errno::Errno::ECONNRESET));
+            }
+            Ok(n) => {
+                off += n;
+            }
+            Err(EAGAIN) => {
+                if off == 0 {
+                    return Err(ReceiveError::NoMessageAvailable);
+                }
+                std::thread::yield_now();
+            }
+            Err(e) => return Err(ReceiveError::OsError(e)),
+        }
+        if off == HDR {
             break;
         }
-        off += n;
     }
-    Ok(())
+    let msg_len = u64::from_be_bytes(header) as usize;
+    if msg_len == 0 {
+        return Ok(0);
+    }
+    let oversized = msg_len > recv_buffer_len;
+    // Always drain the full body so the stream stays aligned; if the caller's
+    // buffer is too small we drain into a temporary buffer.
+    let mut tmp: std::vec::Vec<u8> = std::vec::Vec::new();
+    let mut read_into: &mut [u8] = if oversized {
+        tmp.resize(msg_len, 0);
+        tmp.as_mut_slice()
+    } else {
+        &mut recv_buffer[..msg_len]
+    };
+    let mut boff = 0usize;
+    loop {
+        match socket::recv(fd, &mut read_into[boff..], MsgFlags::empty()) {
+            Ok(0) => {
+                return Err(ReceiveError::OsError(nix::errno::Errno::ECONNRESET));
+            }
+            Ok(n) => {
+                boff += n;
+            }
+            Err(EAGAIN) => std::thread::yield_now(),
+            Err(e) => return Err(ReceiveError::OsError(e)),
+        }
+        if boff == msg_len {
+            break;
+        }
+    }
+    if oversized {
+        recv_buffer.copy_from_slice(&tmp[..recv_buffer_len]);
+        Err(ReceiveError::ExternalBufferToSmall((recv_buffer_len, msg_len)))
+    } else {
+        Ok(msg_len)
+    }
 }
 
 pub fn set_nonblock(fd: nix::libc::c_int) -> Result<(), nix::errno::Errno> {
@@ -137,6 +194,29 @@ pub fn set_nonblock(fd: nix::libc::c_int) -> Result<(), nix::errno::Errno> {
             -1 => Err(nix::errno::Errno::last()),
             _ => Ok(()),
         }
+    }
+}
+
+/// Align the socket send/receive buffers with a message size so that
+/// reasonably large payloads do not constantly trigger nonblocking
+/// backpressure. macOS `SOCK_STREAM` defaults to a small (8 KB) buffer,
+/// unlike Linux's 256 KB+.
+pub fn set_socket_buffers(fd: nix::libc::c_int, size: i32) {
+    unsafe {
+        let _ = nix::libc::setsockopt(
+            fd,
+            nix::libc::SOL_SOCKET,
+            nix::libc::SO_SNDBUF,
+            &size as *const i32 as *const nix::libc::c_void,
+            std::mem::size_of::<i32>() as u32,
+        );
+        let _ = nix::libc::setsockopt(
+            fd,
+            nix::libc::SOL_SOCKET,
+            nix::libc::SO_RCVBUF,
+            &size as *const i32 as *const nix::libc::c_void,
+            std::mem::size_of::<i32>() as u32,
+        );
     }
 }
 
@@ -164,6 +244,8 @@ impl<E: BulkTransport> UnixDatagramListener<E> {
             None,
         )?;
         set_nonblock(fd.as_raw_fd())?;
+        #[cfg(target_os = "macos")]
+        set_socket_buffers(fd.as_raw_fd(), 1 << 20);
         let unix_addr = UnixAddr::new(addr)?;
         if Path::new(addr).exists() {
             // We ignore errors. This may happen when drop and so on is not in sync
@@ -188,6 +270,8 @@ impl<E: BulkTransport> TransportListener<UnixDatagram<E>> for UnixDatagramListen
                 // Own the fd immediately so it's closed automatically if
                 // `on_accept` returns an error (e.g. buffer size mismatch).
                 let owned_fd = unsafe { OwnedFd::from_raw_fd(fd) };
+                #[cfg(target_os = "macos")]
+                set_socket_buffers(owned_fd.as_raw_fd(), 1 << 20);
                 let extra = E::on_accept(owned_fd.as_raw_fd())?;
                 #[cfg(target_os = "macos")]
                 let peer = peer_addr_of(&owned_fd);
@@ -219,7 +303,6 @@ pub struct UnixDatagram<E: BulkTransport = ()> {
     /// peer has closed, so we keep the address we captured at connect/accept
     /// as a fallback.
     #[cfg(target_os = "macos")]
-    #[allow(dead_code)]
     peer: Option<String>,
 }
 impl<E: BulkTransport> Drop for UnixDatagram<E> {
@@ -241,6 +324,8 @@ impl<E: BulkTransport> UnixDatagram<E> {
             None,
         )?;
         set_nonblock(fd.as_raw_fd())?;
+        #[cfg(target_os = "macos")]
+        set_socket_buffers(fd.as_raw_fd(), 1 << 20);
         let unix_addr = UnixAddr::new(addr)?;
 
         let ret = socket::connect(fd.as_raw_fd(), &unix_addr);
