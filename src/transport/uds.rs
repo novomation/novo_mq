@@ -7,11 +7,13 @@ use crate::{
     },
 };
 use nix::{
-    errno::Errno::{EAGAIN, ECONNRESET, EPIPE, ENOENT},
+    errno::Errno::{EAGAIN, ECONNRESET, ENOENT, ENOSPC},
     sys::socket::{
         self, AddressFamily, Backlog, MsgFlags, SockFlag, SockType, UnixAddr,
     },
 };
+#[cfg(target_os = "macos")]
+use nix::errno::Errno::EPIPE;
 #[cfg(not(target_os = "macos"))]
 use nix::sys::socket::RecvMsg;
 use std::{
@@ -385,6 +387,7 @@ impl<E: BulkTransport> TransportConnection for UnixDatagram<E> {
         match ret {
             Ok(len) => Ok(len),
             Err(ECONNRESET) => Err(SendError::ConnectionEnded),
+            Err(ENOSPC) => Err(SendError::OsBufferFull),
             #[cfg(target_os = "macos")]
             Err(EPIPE) => Err(SendError::ConnectionEnded),
             Err(err) => Err(SendError::OsError(err)),

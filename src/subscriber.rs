@@ -240,7 +240,7 @@ mod test_tb {
 
         let mut buf = [0u8; 1000];
         let (len, _) = sub.try_recv(&mut buf).unwrap();
-        println!("{:?}", String::from_utf8_lossy(&buf[0..len]));
+        assert_eq!(&buf[..len], b"hans");
         drop(publ);
         let mut publ = Publisher::<TbTransp>::new("", "peter1").unwrap();
 
@@ -253,6 +253,54 @@ mod test_tb {
         sub.wait_until_connected();
         publ.try_send("hans".as_bytes()).unwrap();
         let (len, _) = sub.try_recv(&mut buf).unwrap();
-        println!("{:?}", String::from_utf8_lossy(&buf[0..len]));
+        assert_eq!(&buf[..len], b"hans");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[cfg(test)]
+mod test_spsc {
+    use super::*;
+    use crate::{
+        publisher::Publisher,
+        transport::spsc::{SpscTransport, SpscTransportConfig},
+    };
+    use test_log::test;
+    type SpscTransp = SpscTransport<[u8; 24], 4>;
+
+    #[test]
+    fn smoke_spsc() {
+        let mut sub =
+            Subscriber::<SpscTransp>::new("", "peter_spsc1", SpscTransportConfig::new()).unwrap();
+        let mut publ = Publisher::<SpscTransp>::new("", "peter_spsc1").unwrap();
+        publ.wait_for_subscribers(1);
+        sub.wait_until_connected();
+        publ.try_send("hans".as_bytes()).unwrap();
+
+        let mut buf = [0u8; 1000];
+        let (len, _) = sub.try_recv(&mut buf).unwrap();
+        assert_eq!(&buf[..len], b"hans");
+        drop(publ);
+        let mut publ = Publisher::<SpscTransp>::new("", "peter_spsc1").unwrap();
+
+        // Give the connection-loss monitor a moment to flag the lost
+        // connection; the first recv after that returns DisconnectDetected.
+        let mut buf = [0u8; 1000];
+        let mut saw_disconnect = false;
+        for _ in 0..200 {
+            match sub.try_recv(&mut buf) {
+                Err(ReceiveError::DisconnectDetected) => {
+                    saw_disconnect = true;
+                    break;
+                }
+                _ => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        assert!(saw_disconnect, "expected a DisconnectDetected after publisher drop");
+        publ.wait_for_subscribers(1);
+        sub.wait_until_connected();
+        publ.try_send("hans".as_bytes()).unwrap();
+        let (len, _) = sub.try_recv(&mut buf).unwrap();
+        assert_eq!(&buf[..len], b"hans");
     }
 }
