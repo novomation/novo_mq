@@ -1,4 +1,7 @@
 pub use crate::transport::BulkTransport;
+#[cfg(not(target_os = "macos"))]
+pub use crate::transport::tb::{ByteInit, TbTransport, TbTransportConfig};
+
 use crate::{TransportError, publisher::Publisher, subscriber::Subscriber};
 use log::{debug, warn};
 use std::path::{Path, PathBuf};
@@ -95,7 +98,7 @@ mod tests {
 
 #[cfg(not(target_os = "macos"))]
 #[cfg(test)]
-mod tests {
+mod tests_tb {
     use std::{
         sync::{
             Arc,

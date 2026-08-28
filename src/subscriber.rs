@@ -224,7 +224,7 @@ mod test {
 
 #[cfg(not(target_os = "macos"))]
 #[cfg(test)]
-mod test {
+mod test_tb {
     use super::*;
     use crate::{
         publisher::Publisher,
