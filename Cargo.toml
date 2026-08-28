@@ -20,7 +20,7 @@ thiserror = "2.0"
 uuid = { version = "1", features = ["v4"] }
 waitfree-sync = "0.3"
 rtsan-standalone = { version = "0.3.0", optional = true }
-rt_tunex = { version = "0.5.0" }
+rt_tunex = { path = "../rt_tunex" }
 crossbeam-utils = "0.8.22"
 memmap2 = "0.9.11"
 
