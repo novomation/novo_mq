@@ -8,14 +8,19 @@ use crate::{
 };
 use nix::{
     errno::Errno::{EAGAIN, EALREADY, ECONNREFUSED, ECONNRESET, EINPROGRESS, ENOENT, EPIPE},
-    sys::socket::{self, AddressFamily, Backlog, MsgFlags, RecvMsg, SockFlag, SockType, UnixAddr},
+    sys::socket::{self, AddressFamily, Backlog, MsgFlags, SockFlag, SockType, UnixAddr},
     sys::stat::{SFlag, lstat},
 };
+#[cfg(not(target_os = "macos"))]
+use nix::sys::socket::RecvMsg;
 use std::{
-    io::IoSliceMut,
     os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
     path::Path,
 };
+#[cfg(target_os = "macos")]
+use std::vec::Vec;
+#[cfg(not(target_os = "macos"))]
+use std::io::IoSliceMut;
 
 fn create_unix_socket() -> Result<OwnedFd, TransportError> {
     Ok(socket::socket(
@@ -71,35 +76,94 @@ impl BulkTransport for () {
     }
 
     fn send_one_msg(&mut self, fd: RawFd, buf: &[u8], flags: MsgFlags) -> nix::Result<usize> {
-        socket::send(fd, buf, flags)
+        #[cfg(not(target_os = "macos"))]
+        {
+            socket::send(fd, buf, flags)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // macOS has no SOCK_SEQPACKET, so the underlying SOCK_STREAM has no
+            // message boundaries.  We emulate them by prepending an 8-byte
+            // big-endian length on the wire.
+            let header = (buf.len() as u64).to_be_bytes();
+            let mut out = Vec::with_capacity(header.len() + buf.len());
+            out.extend_from_slice(&header);
+            out.extend_from_slice(buf);
+            let n = socket::send(fd, &out, flags)?;
+            if n < header.len() {
+                return Err(nix::errno::Errno::EAGAIN);
+            }
+            Ok(n - header.len())
+        }
     }
 
     fn recv_one_msg(
         &mut self,
         socket: RawFd,
         recv_buffer: &mut [u8],
-        flags: MsgFlags,
+        _flags: MsgFlags,
     ) -> Result<usize, super::ReceiveError> {
         let recv_buffer_len = recv_buffer.len();
-        let mut iov = [IoSliceMut::new(recv_buffer)];
-        let mut cmsg_buffer = [0u8; 1];
-        let res: Result<RecvMsg<()>, nix::errno::Errno> =
-            socket::recvmsg(socket, &mut iov, Some(&mut cmsg_buffer), flags);
-        match res {
-            Ok(res) => {
-                if res.flags.contains(MsgFlags::MSG_TRUNC) {
-                    Err(ReceiveError::ExternalBufferToSmall((
-                        recv_buffer_len,
-                        res.bytes,
-                    )))
-                } else {
-                    Ok(res.bytes)
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut iov = [IoSliceMut::new(recv_buffer)];
+            let mut cmsg_buffer = [0u8; 1];
+            let res: Result<RecvMsg<()>, nix::errno::Errno> = socket::recvmsg(
+                socket,
+                &mut iov,
+                Some(&mut cmsg_buffer),
+                _flags,
+            );
+            return match res {
+                Ok(res) => {
+                    if res.flags.contains(MsgFlags::MSG_TRUNC) {
+                        Err(ReceiveError::ExternalBufferToSmall((
+                            recv_buffer_len,
+                            res.bytes,
+                        )))
+                    } else {
+                        Ok(res.bytes)
+                    }
                 }
+                Err(nix::errno::Errno::EAGAIN) => Err(ReceiveError::NoMessageAvailable),
+                Err(err) => Err(err.into()),
+            };
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let mut header = [0u8; 8];
+            read_full(socket, &mut header)?;
+            let msg_len = u64::from_be_bytes(header) as usize;
+            if msg_len > recv_buffer_len {
+                let mut oversized = vec![0u8; msg_len];
+                read_full(socket, &mut oversized)?;
+                recv_buffer.copy_from_slice(&oversized[..recv_buffer_len]);
+                Err(ReceiveError::ExternalBufferToSmall((recv_buffer_len, msg_len)))
+            } else {
+                read_full(socket, &mut recv_buffer[..msg_len])?;
+                Ok(msg_len)
             }
-            Err(nix::errno::Errno::EAGAIN) => Err(ReceiveError::NoMessageAvailable),
-            Err(err) => Err(err.into()),
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn read_full(fd: RawFd, buf: &mut [u8]) -> Result<(), super::ReceiveError> {
+    let mut off = 0;
+    while off < buf.len() {
+        let n = socket::recv(fd, &mut buf[off..], MsgFlags::empty())
+            .map_err(|e| match e {
+                EAGAIN => super::ReceiveError::NoMessageAvailable,
+                other => super::ReceiveError::OsError(other),
+            })?;
+        if n == 0 {
+            break;
+        }
+        off += n;
+    }
+    Ok(())
 }
 
 pub fn set_nonblock(fd: nix::libc::c_int) -> Result<(), nix::errno::Errno> {
@@ -151,9 +215,13 @@ impl<E: BulkTransport> TransportListener<UnixDatagram<E>> for UnixDatagramListen
                 // `on_accept` returns an error (e.g. buffer size mismatch).
                 let owned_fd = unsafe { OwnedFd::from_raw_fd(fd) };
                 let extra = E::on_accept(owned_fd.as_raw_fd())?;
+                #[cfg(target_os = "macos")]
+                let peer = peer_addr_of(&owned_fd);
                 Ok(UnixDatagram {
                     socket: owned_fd,
                     extra,
+                    #[cfg(target_os = "macos")]
+                    peer,
                 })
             }
             Err(EAGAIN) => Err(TransportError::WouldBlock),
@@ -171,6 +239,14 @@ impl<E: BulkTransport> TransportListener<UnixDatagram<E>> for UnixDatagramListen
 pub struct UnixDatagram<E: BulkTransport = ()> {
     socket: OwnedFd,
     pub extra: E,
+    /// Cached peer path captured at connect()/accept() time.
+    ///
+    /// On macOS `SOCK_STREAM` `getpeername()` may no longer succeed once the
+    /// peer has closed, so we keep the address we captured at connect/accept
+    /// as a fallback.
+    #[cfg(target_os = "macos")]
+    #[allow(dead_code)]
+    peer: Option<String>,
 }
 impl<E: BulkTransport> Drop for UnixDatagram<E> {
     fn drop(&mut self) {
@@ -193,7 +269,14 @@ impl<E: BulkTransport> UnixDatagram<E> {
         }
 
         let extra = E::on_connect(fd.as_raw_fd(), config)?;
-        let ud = UnixDatagram { socket: fd, extra };
+        #[cfg(target_os = "macos")]
+        let peer = peer_addr_of(&fd);
+        let ud = UnixDatagram {
+            socket: fd,
+            extra,
+            #[cfg(target_os = "macos")]
+            peer,
+        };
         log::info!("UnixDatagram now connected to {:?}", ud.peer_addr());
         Ok(ud)
     }
@@ -205,13 +288,27 @@ impl<E: BulkTransport> TransportConnection for UnixDatagram<E> {
     }
 
     fn peer_addr(&self) -> Option<String> {
-        socket::getpeername(self.socket.as_raw_fd())
-            .ok()
-            .map(|addr: UnixAddr| {
-                addr.path()
-                    .map(|addr| addr.to_str().unwrap_or_default().to_string())
-                    .unwrap_or_default()
-            })
+        #[cfg(not(target_os = "macos"))]
+        {
+            socket::getpeername(self.socket.as_raw_fd())
+                .ok()
+                .map(|addr: UnixAddr| {
+                    addr.path()
+                        .map(|addr| addr.to_str().unwrap_or_default().to_string())
+                        .unwrap_or_default()
+                })
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let live = socket::getpeername(self.socket.as_raw_fd())
+                .ok()
+                .and_then(|addr: UnixAddr| {
+                    addr.path()
+                        .map(|addr| addr.to_str().unwrap_or_default().to_string())
+                        .filter(|s| !s.is_empty())
+                });
+            live.or_else(|| self.peer.clone())
+        }
     }
 
     fn send(&mut self, msg: &[u8]) -> Result<usize, super::SendError> {
@@ -235,6 +332,16 @@ impl<E: BulkTransport> TransportConnection for UnixDatagram<E> {
         self.extra
             .recv_one_msg(self.socket.as_raw_fd(), recv_buffer, flags)
     }
+}
+
+fn peer_addr_of(fd: &OwnedFd) -> Option<String> {
+    socket::getpeername(fd.as_raw_fd())
+        .ok()
+        .map(|addr: UnixAddr| {
+            addr.path()
+                .map(|addr| addr.to_str().unwrap_or_default().to_string())
+                .unwrap_or_default()
+        })
 }
 
 #[cfg(test)]

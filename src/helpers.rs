@@ -14,7 +14,7 @@ pub fn set_calling_thread_to_nrt() {
     let _ = set_other(Pid::this(), 0)
         .inspect_err(|err| error!("Could not set sched normal to management: {}", err));
 }
-#[cfg(target_family = "unix")]
+#[cfg(target_os = "linux")]
 fn allowed_cpus() -> Option<u64> {
     let tid = unsafe { nix::libc::getpid() };
     let status = std::fs::read_to_string(format!("/proc/{tid}/status")).unwrap();
@@ -29,6 +29,22 @@ fn allowed_cpus() -> Option<u64> {
             None
         }
     })
+}
+
+#[cfg(target_os = "macos")]
+fn allowed_cpus() -> Option<u64> {
+    // macOS does not expose /proc/<pid>/status (the Linux procfs). Instead we
+    // ask the OS for the number of usable processor parallelism and build a
+    // best-effort contiguous low-bits mask from it.
+    let cpus = std::thread::available_parallelism().ok()?.get() as u64;
+    if cpus == 0 {
+        return None;
+    }
+    if cpus >= 64 {
+        Some(u64::MAX)
+    } else {
+        Some((1u64 << cpus) - 1)
+    }
 }
 
 #[cfg(target_os = "windows")]
