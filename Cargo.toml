@@ -44,6 +44,7 @@ zerocopy = { version = "0.8", features = ["derive"] }
 
 [features]
 rtsan = ["rtsan-standalone"]
+tb-bench = []
 
 
 [[bench]]
@@ -57,6 +58,7 @@ harness = false
 [[bench]]
 name = "long_term_tb"
 harness = false
+required-features = ["tb-bench"]
 
 [[bench]]
 name = "mem_test"
