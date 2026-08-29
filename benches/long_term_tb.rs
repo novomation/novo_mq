@@ -156,7 +156,8 @@ fn main() {
 
             let _ = set_affinity(Pid::this(), CpuSet::empty().insert(0))
                 .inspect_err(|err| log::warn!("Could not set affinity: {err}"));
-            let _ = set_fifo(Pid::this(), 95).inspect_err(|err| log::warn!("Could not set FIFO: {err}"));
+            let _ = set_fifo(Pid::this(), 95)
+                .inspect_err(|err| log::warn!("Could not set FIFO: {err}"));
 
             info!("TX ready");
             let mut i = 0;
@@ -191,7 +192,8 @@ fn main() {
         let mut buffer = [0u8; size_of::<Payload>()];
         let _ = set_affinity(Pid::this(), CpuSet::empty().insert(1))
             .inspect_err(|err| log::warn!("Could not set affinity: {err}"));
-        let _ = set_fifo(Pid::this(), 95).inspect_err(|err| log::warn!("Could not set FIFO: {err}"));
+        let _ =
+            set_fifo(Pid::this(), 95).inspect_err(|err| log::warn!("Could not set FIFO: {err}"));
 
         info!("RX ready");
 

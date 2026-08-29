@@ -5,9 +5,11 @@ mod bulk_transport;
 #[cfg(target_family = "unix")]
 pub use bulk_transport::BulkTransport;
 #[cfg(target_os = "linux")]
-pub mod tb;
+pub mod direct_shm;
 #[cfg(target_os = "linux")]
 pub mod spsc;
+#[cfg(target_os = "linux")]
+pub mod tb;
 
 #[cfg(target_family = "unix")]
 pub mod uds;
@@ -854,14 +856,12 @@ mod tests_spsc {
         join.join().unwrap();
 
         // Second send reports an error (the peer's socket is gone).
-        assert!(
-            matches!(
-                client.send(b"msg"),
-                Err(SendError::ConnectionEnded)
-                    | Err(SendError::OsError(_))
-                    | Err(SendError::OsBufferFull)
-            )
-        );
+        assert!(matches!(
+            client.send(b"msg"),
+            Err(SendError::ConnectionEnded)
+                | Err(SendError::OsError(_))
+                | Err(SendError::OsBufferFull)
+        ));
     }
 
     #[test]

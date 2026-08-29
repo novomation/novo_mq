@@ -32,7 +32,9 @@ use crate::transport::BulkTransport;
 use crate::transport::TransportError;
 use crate::transport::algos::spsc;
 use crate::transport::algos::triple_buffer::ByteInit;
-use crate::transport::tb::{TbTransportConfig, connection_monitor, recv_usize, shm_helpers, send_usize};
+use crate::transport::tb::{
+    TbTransportConfig, connection_monitor, recv_usize, send_usize, shm_helpers,
+};
 use memmap2::MmapMut;
 use nix::errno::Errno::{ECONNRESET, ENOMEM, ENOSPC};
 use nix::sys::socket::MsgFlags;
@@ -286,9 +288,7 @@ mod tests {
 
     type SpscT = SpscTransport<[u8; 32], 4>;
 
-    fn accept_one(
-        listener: &mut UnixDatagramListener<SpscT>,
-    ) -> UnixDatagram<SpscT> {
+    fn accept_one(listener: &mut UnixDatagramListener<SpscT>) -> UnixDatagram<SpscT> {
         loop {
             if let Ok(connection) = listener.accept() {
                 return connection;
@@ -307,8 +307,7 @@ mod tests {
     #[test]
     fn test_connect_no_existing() {
         assert_eq!(
-            UnixDatagram::<SpscT>::connect("spsc-nothing", SpscTransportConfig::new())
-                .unwrap_err(),
+            UnixDatagram::<SpscT>::connect("spsc-nothing", SpscTransportConfig::new()).unwrap_err(),
             TransportError::PeerDoesNotExist
         );
     }
@@ -351,10 +350,7 @@ mod tests {
         let mut buf = [0u8; 64];
         assert_eq!(server.recv(&mut buf), Ok(5));
         assert_eq!(&buf[..5], b"hello");
-        assert_eq!(
-            server.recv(&mut buf),
-            Err(ReceiveError::NoMessageAvailable)
-        );
+        assert_eq!(server.recv(&mut buf), Err(ReceiveError::NoMessageAvailable));
     }
 
     #[test]

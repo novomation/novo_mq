@@ -1,8 +1,25 @@
 pub use crate::transport::BulkTransport;
-#[cfg(not(target_os = "macos"))]
-pub use crate::transport::tb::{ByteInit, TbTransport, TbTransportConfig};
+#[cfg(target_os = "linux")]
+pub use crate::transport::direct_shm::DirectShmGuard;
+#[cfg(target_os = "linux")]
+pub use crate::transport::direct_shm::DirectShmTransport;
+#[cfg(target_os = "linux")]
+pub use crate::transport::direct_shm::DirectShmTransportConfig;
+#[cfg(target_os = "linux")]
+pub use crate::transport::direct_shm::{read_shared, required_size, write_shared};
 #[cfg(target_os = "linux")]
 pub use crate::transport::spsc::{SpscTransport, SpscTransportConfig};
+#[cfg(not(target_os = "macos"))]
+pub use crate::transport::tb::{ByteInit, TbTransport, TbTransportConfig};
+// Public surface for direct / custom connection use (e.g. the shared-memory
+// transport's UDS + memfd negotiation). Re-exported from the otherwise-private
+// `transport` and `topic` modules.
+#[cfg(target_family = "unix")]
+pub use crate::topic::socket_path;
+#[cfg(target_family = "unix")]
+pub use crate::transport::uds::{UnixDatagram, UnixDatagramListener};
+#[cfg(target_family = "unix")]
+pub use crate::transport::{TransportConnection, TransportListener};
 
 use crate::{TransportError, publisher::Publisher, subscriber::Subscriber};
 use log::{debug, warn};
@@ -190,7 +207,9 @@ mod tests_spsc {
         });
         let rx = std::thread::spawn(move || {
             let dl: Datalayer<SpscTransp> = Datalayer::open("test_domain_spsc").unwrap();
-            let mut sub = dl.subscriber("my_topic", SpscTransportConfig::new()).unwrap();
+            let mut sub = dl
+                .subscriber("my_topic", SpscTransportConfig::new())
+                .unwrap();
             std::thread::sleep(Duration::from_millis(1000));
             sub.wait_until_connected();
             let mut buf = [0u8; 500];
