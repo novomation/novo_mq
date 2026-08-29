@@ -75,5 +75,5 @@ name = "direct_shm"
 harness = false
 
 [[bench]]
-name = "shared_memory"
+name = "long_term_sm"
 harness = false
