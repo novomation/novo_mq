@@ -6,24 +6,22 @@ use crate::{
         bulk_transport::BulkTransport,
     },
 };
-use nix::{
-    errno::Errno::{EAGAIN, ECONNRESET, ENOENT, ENOSPC},
-    sys::socket::{
-        self, AddressFamily, Backlog, MsgFlags, SockFlag, SockType, UnixAddr,
-    },
-};
 #[cfg(target_os = "macos")]
 use nix::errno::Errno::EPIPE;
 #[cfg(not(target_os = "macos"))]
 use nix::sys::socket::RecvMsg;
+use nix::{
+    errno::Errno::{EAGAIN, ECONNRESET, ENOENT, ENOSPC},
+    sys::socket::{self, AddressFamily, Backlog, MsgFlags, SockFlag, SockType, UnixAddr},
+};
+#[cfg(not(target_os = "macos"))]
+use std::io::IoSliceMut;
+#[cfg(target_os = "macos")]
+use std::vec::Vec;
 use std::{
     os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
     path::Path,
 };
-#[cfg(target_os = "macos")]
-use std::vec::Vec;
-#[cfg(not(target_os = "macos"))]
-use std::io::IoSliceMut;
 
 impl BulkTransport for () {
     type Config = ();
@@ -81,12 +79,8 @@ impl BulkTransport for () {
         {
             let mut iov = [IoSliceMut::new(recv_buffer)];
             let mut cmsg_buffer = [0u8; 1];
-            let res: Result<RecvMsg<()>, nix::errno::Errno> = socket::recvmsg(
-                socket,
-                &mut iov,
-                Some(&mut cmsg_buffer),
-                _flags,
-            );
+            let res: Result<RecvMsg<()>, nix::errno::Errno> =
+                socket::recvmsg(socket, &mut iov, Some(&mut cmsg_buffer), _flags);
             return match res {
                 Ok(res) => {
                     if res.flags.contains(MsgFlags::MSG_TRUNC) {
@@ -182,7 +176,10 @@ fn macos_try_recv_one(
     }
     if oversized {
         recv_buffer.copy_from_slice(&tmp[..recv_buffer_len]);
-        Err(ReceiveError::ExternalBufferToSmall((recv_buffer_len, msg_len)))
+        Err(ReceiveError::ExternalBufferToSmall((
+            recv_buffer_len,
+            msg_len,
+        )))
     } else {
         Ok(msg_len)
     }
@@ -369,13 +366,14 @@ impl<E: BulkTransport> TransportConnection for UnixDatagram<E> {
         }
         #[cfg(target_os = "macos")]
         {
-            let live = socket::getpeername(self.socket.as_raw_fd())
-                .ok()
-                .and_then(|addr: UnixAddr| {
-                    addr.path()
-                        .map(|addr| addr.to_str().unwrap_or_default().to_string())
-                        .filter(|s| !s.is_empty())
-                });
+            let live =
+                socket::getpeername(self.socket.as_raw_fd())
+                    .ok()
+                    .and_then(|addr: UnixAddr| {
+                        addr.path()
+                            .map(|addr| addr.to_str().unwrap_or_default().to_string())
+                            .filter(|s| !s.is_empty())
+                    });
             live.or_else(|| self.peer.clone())
         }
     }

@@ -296,7 +296,10 @@ mod test_spsc {
                 _ => std::thread::sleep(Duration::from_millis(10)),
             }
         }
-        assert!(saw_disconnect, "expected a DisconnectDetected after publisher drop");
+        assert!(
+            saw_disconnect,
+            "expected a DisconnectDetected after publisher drop"
+        );
         publ.wait_for_subscribers(1);
         sub.wait_until_connected();
         publ.try_send("hans".as_bytes()).unwrap();

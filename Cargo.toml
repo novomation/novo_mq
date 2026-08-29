@@ -69,3 +69,11 @@ required-features = ["spsc-bench"]
 [[bench]]
 name = "mem_test"
 harness = false
+
+[[bench]]
+name = "direct_shm"
+harness = false
+
+[[bench]]
+name = "shared_memory"
+harness = false

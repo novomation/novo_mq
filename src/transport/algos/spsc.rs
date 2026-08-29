@@ -107,7 +107,9 @@ const fn is_power_of_two(x: usize) -> bool {
 pub unsafe fn spsc_in_memory<T, const N: usize>(mem: *mut u8) -> (Sender<T, N>, Receiver<T, N>) {
     let shared = mem as *mut Shared<T, N>;
     Shared::new(shared);
-    (unsafe { Sender::new(shared) }, unsafe { Receiver::new(shared) })
+    (unsafe { Sender::new(shared) }, unsafe {
+        Receiver::new(shared)
+    })
 }
 
 /// Wrap an *already-initialised* shared-memory region (e.g. one that the
@@ -121,7 +123,9 @@ pub unsafe fn spsc_in_memory<T, const N: usize>(mem: *mut u8) -> (Sender<T, N>, 
 /// initialised `Shared<T, N>` (do *not* use this to create a new queue).
 pub unsafe fn spsc_wrap<T, const N: usize>(mem: *mut u8) -> (Sender<T, N>, Receiver<T, N>) {
     let shared = mem as *mut Shared<T, N>;
-    (unsafe { Sender::new(shared) }, unsafe { Receiver::new(shared) })
+    (unsafe { Sender::new(shared) }, unsafe {
+        Receiver::new(shared)
+    })
 }
 
 /// A single slot of the ring buffer: an optional value plus an occupied flag.
@@ -170,7 +174,11 @@ impl<T, const N: usize> Sender<T, N> {
         // this, making the value visible before it sees the flag.
         slot.occupied.store(true, Ordering::Release);
         // Release: publishes this slot to the consumer.
-        unsafe { (*self.shared).write.store(write.wrapping_add(1), Ordering::Release) };
+        unsafe {
+            (*self.shared)
+                .write
+                .store(write.wrapping_add(1), Ordering::Release)
+        };
         Ok(())
     }
 
@@ -226,12 +234,15 @@ impl<T, const N: usize> Receiver<T, N> {
         if !slot.occupied.load(Ordering::Acquire) {
             return Err(TryRecvError::Empty);
         }
-        let value = unsafe { slot.value.get().replace(None) }
-            .ok_or(TryRecvError::Empty)?;
+        let value = unsafe { slot.value.get().replace(None) }.ok_or(TryRecvError::Empty)?;
         // Release: tells the producer this slot is free again (wrap-around).
         slot.occupied.store(false, Ordering::Release);
         // Release: publishes that we consumed this slot.
-        unsafe { (*self.shared).read.store(read.wrapping_add(1), Ordering::Release) };
+        unsafe {
+            (*self.shared)
+                .read
+                .store(read.wrapping_add(1), Ordering::Release)
+        };
         Ok(value)
     }
 
