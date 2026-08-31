@@ -20,6 +20,10 @@ pub use uds::BulkTransport;
 #[cfg(target_family = "windows")]
 pub use win as uds;
 #[cfg(target_family = "windows")]
+pub use win::direct_shm_windows as direct_shm;
+#[cfg(target_family = "windows")]
+pub use win::spsc_windows as spsc;
+#[cfg(target_family = "windows")]
 pub use win::tb;
 
 #[cfg(target_family = "unix")]

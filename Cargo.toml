@@ -33,7 +33,9 @@ windows = { version = "0.62", features = [
     "Win32_Networking_WinSock",
     "Win32_Security",
     "Win32_System_IO",
+    "Win32_System_Kernel",
     "Win32_System_Memory",
+    "Win32_System_Threading",
 ] }
 
 [dev-dependencies]

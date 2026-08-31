@@ -9,6 +9,13 @@ pub use crate::transport::direct_shm::DirectShmTransportConfig;
 pub use crate::transport::direct_shm::{read_shared, required_size, write_shared};
 #[cfg(target_os = "linux")]
 pub use crate::transport::spsc::{SpscTransport, SpscTransportConfig};
+#[cfg(target_family = "windows")]
+pub use crate::transport::direct_shm::{
+    DirectShmGuard, DirectShmTransport, DirectShmTransportConfig, read_shared, required_size,
+    write_shared,
+};
+#[cfg(target_family = "windows")]
+pub use crate::transport::spsc::{SpscTransport, SpscTransportConfig};
 #[cfg(not(target_os = "macos"))]
 pub use crate::transport::tb::{ByteInit, TbTransport, TbTransportConfig};
 // Public surface for direct / custom connection use (e.g. the shared-memory

@@ -180,9 +180,12 @@ impl<E: BulkTransport> TransportListener<UnixDatagram<E>> for UnixDatagramListen
                 }
             })
             .inspect_err(|e| log::debug!("Error accepting: {:?}", e))?;
-        let extra = E::on_accept(socket)?;
+        // Own the socket immediately so it is closed automatically if
+        // `on_accept` returns an error (e.g. a buffer-size mismatch).
+        let socket = OwnedSocket(socket);
+        let extra = E::on_accept(socket.0)?;
         Ok(UnixDatagram {
-            socket: OwnedSocket(socket),
+            socket,
             extra,
         })
     }

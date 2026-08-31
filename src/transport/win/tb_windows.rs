@@ -35,7 +35,7 @@ use windows::{
 
 /// RAII wrapper closing a named file-mapping `HANDLE` on drop.
 #[derive(Debug)]
-struct OwnedMapping(HANDLE);
+pub(crate) struct OwnedMapping(HANDLE);
 // Safety: `HANDLE` is just an opaque kernel object identifier; it has no
 // thread-affinity and closing it from any thread is well-defined.
 unsafe impl Send for OwnedMapping {}
@@ -47,7 +47,7 @@ impl Drop for OwnedMapping {
 
 /// RAII wrapper unmapping a view created by `MapViewOfFile` on drop.
 #[derive(Debug)]
-struct MappedView(MEMORY_MAPPED_VIEW_ADDRESS);
+pub(crate) struct MappedView(MEMORY_MAPPED_VIEW_ADDRESS);
 // Safety: the mapped memory is only ever accessed through the triple-buffer's
 // own synchronization; the raw pointer itself has no thread-affinity.
 unsafe impl Send for MappedView {}
@@ -56,10 +56,16 @@ impl Drop for MappedView {
         let _ = unsafe { UnmapViewOfFile(self.0) };
     }
 }
+impl MappedView {
+    /// The base address of the mapped view.
+    pub(crate) fn ptr(&self) -> *mut u8 {
+        self.0.Value as *mut u8
+    }
+}
 
 /// Creates a new named file mapping of `size` bytes and maps it into this
 /// process's address space.
-fn create_mapping(name: &CStr, size: u32) -> Result<(OwnedMapping, MappedView), TransportError> {
+pub(crate) fn create_mapping(name: &CStr, size: u32) -> Result<(OwnedMapping, MappedView), TransportError> {
     let mapping = unsafe {
         CreateFileMappingA(
             INVALID_HANDLE_VALUE,
@@ -85,7 +91,7 @@ fn create_mapping(name: &CStr, size: u32) -> Result<(OwnedMapping, MappedView), 
 
 /// Opens an existing named file mapping (created by the peer via
 /// [`create_mapping`]) and maps it into this process's address space.
-fn open_mapping(name: &CStr, size: u32) -> Result<(OwnedMapping, MappedView), TransportError> {
+pub(crate) fn open_mapping(name: &CStr, size: u32) -> Result<(OwnedMapping, MappedView), TransportError> {
     let mapping = unsafe {
         OpenFileMappingA(
             FILE_MAP_ALL_ACCESS.0,
@@ -104,6 +110,11 @@ fn open_mapping(name: &CStr, size: u32) -> Result<(OwnedMapping, MappedView), Tr
     }
 
     Ok((mapping, MappedView(view)))
+}
+
+/// Builds a fresh unique NUL-terminated name for a named file mapping.
+pub(crate) fn new_name() -> CString {
+    CString::new(uuid::Uuid::new_v4().to_string()).expect("uuid is a valid cstring")
 }
 
 /// Sends the full contents of `buf`, retrying on `WOULDBLOCK`.
@@ -142,14 +153,14 @@ fn recv_all(socket: SOCKET, mut buf: &mut [u8]) -> Result<(), TransportError> {
 }
 
 /// Sends a NUL-terminated name, prefixed with its length, over `socket`.
-fn send_name(socket: SOCKET, name: &CStr) -> Result<(), TransportError> {
+pub(crate) fn send_name(socket: SOCKET, name: &CStr) -> Result<(), TransportError> {
     let bytes = name.to_bytes_with_nul();
     send_all(socket, &(bytes.len() as u16).to_le_bytes())?;
     send_all(socket, bytes)
 }
 
 /// Receives a NUL-terminated name (as sent by [`send_name`]) from `socket`.
-fn recv_name(socket: SOCKET) -> Result<CString, TransportError> {
+pub(crate) fn recv_name(socket: SOCKET) -> Result<CString, TransportError> {
     let mut len_buf = [0u8; 2];
     recv_all(socket, &mut len_buf)?;
     let len = u16::from_le_bytes(len_buf) as usize;
@@ -159,6 +170,19 @@ fn recv_name(socket: SOCKET) -> Result<CString, TransportError> {
     CStr::from_bytes_with_nul(&buf)
         .map(|s| s.to_owned())
         .map_err(|_| TransportError::Os(WindowsSocketError::WinsockError(WinsockError::Fault)))
+}
+
+/// Sends a `usize` over `socket`. Used to exchange configuration values
+/// (payload size, queue capacity) during the shared-memory handshake.
+pub(crate) fn send_usize(socket: SOCKET, value: usize) -> Result<(), TransportError> {
+    send_all(socket, &value.to_le_bytes())
+}
+
+/// Receives a `usize` sent via [`send_usize`].
+pub(crate) fn recv_usize(socket: SOCKET) -> Result<usize, TransportError> {
+    let mut buf = [0u8; std::mem::size_of::<usize>()];
+    recv_all(socket, &mut buf)?;
+    Ok(usize::from_le_bytes(buf))
 }
 
 /// Bidirectional triple-buffer transport.
@@ -216,7 +240,7 @@ impl TbTransportConfig {
     /// successful zero-byte read, an error, or a hang-up) is treated
     /// uniformly as "connection lost", mirroring the Unix implementation's
     /// use of `EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP`.
-    fn register(&self, socket: SOCKET) -> Arc<AtomicBool> {
+    pub(crate) fn register(&self, socket: SOCKET) -> Arc<AtomicBool> {
         let conn_is_lost = Arc::new(AtomicBool::new(false));
         let key = Arc::into_raw(conn_is_lost.clone()) as usize;
 
