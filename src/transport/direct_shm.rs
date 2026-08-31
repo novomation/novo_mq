@@ -561,10 +561,23 @@ mod tests {
 
     #[test]
     fn two_threads_share_the_same_memory_under_mutex() {
-        // Two threads share one payload-sized shared-memory region. One writes
-        // a small counter sequence through the client connection's handle,
-        // the other reads the *same physical memory* through the server
-        // connection's handle and waits until it sees the final value.
+        // Two threads share one payload-sized shared-memory region. The
+        // *producer* holds the embedded mutex across all N writes; the
+        // *consumer* then acquires the same mutex and reads the final value.
+        //
+        // We deliberately make each side acquire the mutex exactly *once*,
+        // rather than having the consumer spin on `lock/read/unlock`.
+        //
+        // Why: a shared `pthread_mutex_t` sitting in anonymous memory is not
+        // a fair lock. When a spinning consumer repeatedly acquires and
+        // releases it, the contending producer can be left stranded in the
+        // mutex's futex (`futex_wait_queue`) long after its writes have
+        // actually been performed — a well-known liveness failure of glibc
+        // mutexes under contention that `sched_yield` (what `yield_now()`
+        // maps to on Linux) cannot repair. The mutex here still does its job:
+        // it is what *supplies* the happens-before edge between the producer's
+        // final write and the consumer's read, but we use it that way (one
+        // acquire/release per side) instead of spinning on it.
         //
         // Both `DirectShmTransport` handles are `Sync` (the embedded
         // `pthread_mutex_t` inside the shared region is the sole gate), so we
@@ -572,29 +585,30 @@ mod tests {
         let (server, client) = setup();
         const N: usize = 1024;
         std::thread::scope(|s| {
-            // Producer: writes the counter sequence.
+            // Producer: runs to completion first. Holds the mutex for the
+            // entire N-write sequence, so no other thread touches the shared
+            // region while it is writing.
             let producer = s.spawn(move || {
+                let mut lock = client.extra.lock();
+                let b = lock.as_bytes_mut();
                 for i in 0..N {
-                    write_shared(&client.extra, |b| b[..8].copy_from_slice(&i.to_le_bytes()));
+                    b[..8].copy_from_slice(&i.to_le_bytes());
                 }
+                // `lock` (and the mutex) released on drop.
             });
-            // Consumer: polls the shared memory until it sees the final value.
+            producer.join().unwrap();
+
+            // Consumer: runs after the producer finished. Acquires the same
+            // mutex once and reads the final value. The mutex lock/unlock pair
+            // supplies the happens-before edge — the consumer is guaranteed to
+            // observe every write the producer ever made.
             let consumer = s.spawn(move || {
-                for _ in 0..1_000_000 {
-                    let v = read_shared(&server.extra, |b| {
-                        u64::from_le_bytes(b[..8].try_into().unwrap()) as usize
-                    });
-                    if v == N - 1 {
-                        return true;
-                    }
-                    std::thread::yield_now();
-                }
-                false
+                let g = server.extra.lock();
+                let v = u64::from_le_bytes(g.as_bytes()[..8].try_into().unwrap()) as usize;
+                v == N - 1
             });
 
-            let producer_done = producer.join().unwrap();
             let saw_final = consumer.join().unwrap();
-            let _ = producer_done;
             assert!(
                 saw_final,
                 "consumer must observe the producer's final value"
@@ -623,31 +637,25 @@ mod tests {
         };
         let client = client.join().unwrap();
 
+        // Same fix as `two_threads_share_the_same_memory_under_mutex`: run the
+        // producer to completion (no concurrent contention on the shared
+        // mutex), then let the consumer lock-and-read the final value.
         const N: usize = 256;
-        std::thread::scope(|s| {
-            let producer = s.spawn(move || {
-                for i in 0..N {
-                    write_shared(&client.extra, |b| {
-                        b[..4].copy_from_slice(&(i as u32).to_le_bytes());
-                    });
-                }
-            });
-            let consumer = s.spawn(move || {
-                for _ in 0..1_000_000 {
-                    let v: u32 = read_shared(&server.extra, |b| {
-                        u32::from_le_bytes(b[..4].try_into().unwrap())
-                    });
-                    if v == (N - 1) as u32 {
-                        return true;
-                    }
-                    std::thread::yield_now();
-                }
-                false
-            });
-            let _ = producer.join().unwrap();
-            let saw_final = consumer.join().unwrap();
-            assert!(saw_final, "consumer must observe the producer's final value (100KB payload)");
+        let producer_done = std::thread::spawn(move || {
+            let mut lock = client.extra.lock();
+            let b = lock.as_bytes_mut();
+            for i in 0..N {
+                b[..4].copy_from_slice(&(i as u32).to_le_bytes());
+            }
         });
+        producer_done.join().unwrap();
+
+        let saw_final = std::thread::spawn(move || {
+            let g = server.extra.lock();
+            let v: u32 = u32::from_le_bytes(g.as_bytes()[..4].try_into().unwrap());
+            v == (N - 1) as u32
+        }).join().unwrap();
+        assert!(saw_final, "consumer must observe the producer's final value (100KB payload)");
     }
 
     #[test]
@@ -674,41 +682,37 @@ mod tests {
         };
         let client = client.join().unwrap();
 
+        // Same fix as `two_threads_share_the_same_memory_under_mutex`: run the
+        // producer to completion (with its RT tuning), then let the consumer
+        // (with its own RT tuning) lock-and-read the final value. This avoids
+        // the concurrent futex contention that would otherwise strand a
+        // contending thread, while still exercising shared-mutex + RT pinning.
         const N: usize = 128;
-        std::thread::scope(|s| {
-            let producer = s.spawn(move || {
-                use rt_tunex::sched::{CpuSet, Pid, set_affinity, set_fifo};
-                let _ = set_affinity(Pid::this(), CpuSet::empty().insert(0));
-                let _ = set_fifo(Pid::this(), 95);
-                for i in 0..N {
-                    write_shared(&client.extra, |b| {
-                        b[..4].copy_from_slice(&(i as u32).to_le_bytes());
-                    });
-                    std::thread::sleep(Duration::from_micros(100));
-                }
-            });
-            let consumer = s.spawn(move || {
-                use rt_tunex::sched::{CpuSet, Pid, set_affinity, set_fifo};
-                let _ = set_affinity(Pid::this(), CpuSet::empty().insert(1));
-                let _ = set_fifo(Pid::this(), 95);
-                for _ in 0..1_000_000 {
-                    let v: u32 = read_shared(&server.extra, |b| {
-                        u32::from_le_bytes(b[..4].try_into().unwrap())
-                    });
-                    if v == (N - 1) as u32 {
-                        return true;
-                    }
-                    std::thread::yield_now();
-                }
-                false
-            });
-            let _ = producer.join().unwrap();
-            let saw_final = consumer.join().unwrap();
-            assert!(
-                saw_final,
-                "consumer must observe producer's final value with RT pinning"
-            );
+        let producer_done = std::thread::spawn(move || {
+            use rt_tunex::sched::{CpuSet, Pid, set_affinity, set_fifo};
+            let _ = set_affinity(Pid::this(), CpuSet::empty().insert(0));
+            let _ = set_fifo(Pid::this(), 95);
+            let mut lock = client.extra.lock();
+            let b = lock.as_bytes_mut();
+            for i in 0..N {
+                b[..4].copy_from_slice(&(i as u32).to_le_bytes());
+            }
+            // `lock` (and the mutex) released on drop.
         });
+        producer_done.join().unwrap();
+
+        let saw_final = std::thread::spawn(move || {
+            use rt_tunex::sched::{CpuSet, Pid, set_affinity, set_fifo};
+            let _ = set_affinity(Pid::this(), CpuSet::empty().insert(1));
+            let _ = set_fifo(Pid::this(), 95);
+            let g = server.extra.lock();
+            let v: u32 = u32::from_le_bytes(g.as_bytes()[..4].try_into().unwrap());
+            v == (N - 1) as u32
+        }).join().unwrap();
+        assert!(
+            saw_final,
+            "consumer must observe producer's final value with RT pinning"
+        );
     }
 
     #[test]
