@@ -1,7 +1,6 @@
 mod cancelation;
 pub mod datalayer;
 mod helpers;
-#[cfg(target_os = "linux")]
 pub mod shared_memory;
 pub mod publisher;
 pub mod subscriber;
