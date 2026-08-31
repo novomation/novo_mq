@@ -242,9 +242,20 @@ impl<E: BulkTransport> UnixDatagram<E> {
 
         unsafe { select(0, None, Some(&mut writefds), None, None) };
         log::info!("Calling inner connection method");
-        let extra = E::on_connect(fd, config)?;
+        // Own the socket immediately: if `on_connect` fails (e.g. a buffer-size
+        // mismatch detected in the handshake) we must close it so the peer's
+        // blocking handshake read is unblocked and no half-dead AF_UNIX
+        // connection lingers (parity with the Unix `OwnedFd`-on-error path).
+        let socket = OwnedSocket(fd);
+        let extra = match E::on_connect(socket.0, config) {
+            Ok(extra) => extra,
+            Err(e) => {
+                log::info!("on_connect failed, dropping socket");
+                return Err(e);
+            }
+        };
         let ud = UnixDatagram {
-            socket: OwnedSocket(fd),
+            socket,
             extra,
         };
         log::info!("connect: Now connected to {:?}", ud.peer_addr());

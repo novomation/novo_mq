@@ -9,6 +9,7 @@ use crate::{
 };
 use std::{
     ffi::{CStr, CString},
+    mem::size_of,
     sync::{
         Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -351,6 +352,21 @@ where
     type Config = TbTransportConfig;
 
     fn on_accept(socket: SOCKET) -> Result<Self, TransportError> {
+        // Size check: both sides must be built with the same payload type `T`,
+        // otherwise the negotiated shared-memory regions would not agree on
+        // layout. Both sides always send their own size and read the peer's
+        // (in opposite orders), so the error path leaves each side with a full
+        // picture of the mismatch.
+        let our_size = size_of::<T>();
+        send_usize(socket, our_size)?;
+        let peer_size = recv_usize(socket)?;
+        if peer_size != our_size {
+            return Err(TransportError::BufferSizeMismatch {
+                ours: our_size,
+                peer: peer_size,
+            });
+        }
+
         let size: u32 = triple_buffer::required_size::<(usize, T)>()
             .try_into()
             .unwrap();
@@ -389,6 +405,18 @@ where
     }
 
     fn on_connect(socket: SOCKET, config: Self::Config) -> Result<Self, TransportError> {
+        // Size check (mirror of `on_accept`): read our peer's size first, then
+        // send our own. See `on_accept` for the rationale.
+        let our_size = size_of::<T>();
+        let peer_size = recv_usize(socket)?;
+        send_usize(socket, our_size)?;
+        if peer_size != our_size {
+            return Err(TransportError::BufferSizeMismatch {
+                ours: our_size,
+                peer: peer_size,
+            });
+        }
+
         let size: u32 = triple_buffer::required_size::<(usize, T)>()
             .try_into()
             .unwrap();
