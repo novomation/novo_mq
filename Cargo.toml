@@ -3,7 +3,7 @@ name = "novomq"
 version = "0.4.0"
 edition = "2024"
 rust-version = "1.87"
-authors = ["Marc Fischer <marc.fischer@novomation.de>"]
+authors = ["Marc Fischer <marc.fischer@novomation.de>", "Moritz Walker <moritz.walker@novomation.de>"]
 description = "Simple real-time messaging "
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/novomation/novo_mq"
@@ -20,7 +20,7 @@ thiserror = "2.0"
 uuid = { version = "1", features = ["v4"] }
 waitfree-sync = "0.3"
 rtsan-standalone = { version = "0.3.0", optional = true }
-rt_tunex = { path = "../rt_tunex" }
+rt_tunex = { git = "https://github.com/marcfir/rt_tunex.git", branch="develop" }
 crossbeam-utils = "0.8.22"
 memmap2 = "0.9.11"
 
@@ -46,9 +46,6 @@ zerocopy = { version = "0.8", features = ["derive"] }
 
 [features]
 rtsan = ["rtsan-standalone"]
-tb-bench = []
-spsc-bench = []
-
 
 [[bench]]
 name = "realtime"
@@ -61,12 +58,10 @@ harness = false
 [[bench]]
 name = "long_term_tb"
 harness = false
-required-features = ["tb-bench"]
 
 [[bench]]
 name = "long_term_spsc"
 harness = false
-required-features = ["spsc-bench"]
 
 [[bench]]
 name = "mem_test"

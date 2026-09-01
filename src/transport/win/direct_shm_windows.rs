@@ -19,11 +19,11 @@ use crate::transport::ReceiveError;
 use crate::transport::SendError;
 use crate::transport::TransportError;
 use crate::transport::algos::triple_buffer::ByteInit;
+use crate::transport::win::tb::TbTransportConfig;
 use crate::transport::win::tb::{
-    MappedView, OwnedMapping, create_mapping, open_mapping, new_name, recv_name, recv_usize,
+    MappedView, OwnedMapping, create_mapping, new_name, open_mapping, recv_name, recv_usize,
     send_name, send_usize,
 };
-use crate::transport::win::tb::TbTransportConfig;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::sync::Arc;
@@ -361,8 +361,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::uds::{UnixDatagram, UnixDatagramListener};
     use crate::transport::TransportListener;
+    use crate::transport::uds::{UnixDatagram, UnixDatagramListener};
     use std::time::Duration;
 
     const SIZE: usize = 64;

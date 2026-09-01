@@ -183,10 +183,7 @@ impl<E: BulkTransport> TransportListener<UnixDatagram<E>> for UnixDatagramListen
         // `on_accept` returns an error (e.g. a buffer-size mismatch).
         let socket = OwnedSocket(socket);
         let extra = E::on_accept(socket.0)?;
-        Ok(UnixDatagram {
-            socket,
-            extra,
-        })
+        Ok(UnixDatagram { socket, extra })
     }
 
     fn local_addr(&self) -> Option<String> {
@@ -253,10 +250,7 @@ impl<E: BulkTransport> UnixDatagram<E> {
                 return Err(e);
             }
         };
-        let ud = UnixDatagram {
-            socket,
-            extra,
-        };
+        let ud = UnixDatagram { socket, extra };
         log::info!("connect: Now connected to {:?}", ud.peer_addr());
         Ok(ud)
     }

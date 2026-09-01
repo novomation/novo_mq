@@ -22,11 +22,11 @@ use crate::transport::SendError;
 use crate::transport::TransportError;
 use crate::transport::algos::spsc;
 use crate::transport::algos::triple_buffer::ByteInit;
+use crate::transport::win::tb::TbTransportConfig;
 use crate::transport::win::tb::{
-    MappedView, OwnedMapping, create_mapping, open_mapping, new_name, recv_name, recv_usize,
+    MappedView, OwnedMapping, create_mapping, new_name, open_mapping, recv_name, recv_usize,
     send_name, send_usize,
 };
-use crate::transport::win::tb::TbTransportConfig;
 use std::mem::size_of;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -107,9 +107,7 @@ where
 
         // Queue A: this side writes, peer reads.
         let tx_name = new_name();
-        let size: u32 = spsc::required_size::<(usize, T), CAP>()
-            .try_into()
-            .unwrap();
+        let size: u32 = spsc::required_size::<(usize, T), CAP>().try_into().unwrap();
         let (tx_mapping, tx_view) = create_mapping(&tx_name, size)?;
         let (tx, _) = unsafe { spsc::spsc_in_memory(tx_view.ptr()) };
 
@@ -151,23 +149,18 @@ where
             });
         }
 
-        let size: u32 = spsc::required_size::<(usize, T), CAP>()
-            .try_into()
-            .unwrap();
+        let size: u32 = spsc::required_size::<(usize, T), CAP>().try_into().unwrap();
 
         // Queue A name: peer's tx → our rx.
         let rx_name = recv_name(socket)?;
         let (rx_mapping, rx_view) = open_mapping(&rx_name, size)?;
-        let rx = unsafe {
-            spsc::Receiver::new(rx_view.ptr() as *mut spsc::Shared<(usize, T), CAP>)
-        };
+        let rx =
+            unsafe { spsc::Receiver::new(rx_view.ptr() as *mut spsc::Shared<(usize, T), CAP>) };
 
         // Queue B name: peer's rx → our tx.
         let tx_name = recv_name(socket)?;
         let (tx_mapping, tx_view) = open_mapping(&tx_name, size)?;
-        let tx = unsafe {
-            spsc::Sender::new(tx_view.ptr() as *mut spsc::Shared<(usize, T), CAP>)
-        };
+        let tx = unsafe { spsc::Sender::new(tx_view.ptr() as *mut spsc::Shared<(usize, T), CAP>) };
 
         let conn_is_lost = config.register(socket);
 

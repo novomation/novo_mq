@@ -36,9 +36,9 @@
 //! a cross-thread shared-memory layer needs. Cross-*process* sharing still
 //! uses the `DirectShmTransport` UDS + memfd handshake (the same plumbing
 //! this module reuses internally).
+use crate::transport::TransportError;
 use crate::transport::algos::triple_buffer::ByteInit;
 use crate::transport::direct_shm::DirectShmTransport;
-use crate::transport::TransportError;
 use std::any::Any;
 use std::collections::HashMap;
 use std::mem::size_of;
@@ -54,9 +54,8 @@ pub trait SharedPayload:
     ByteInit + Clone + AsMut<[u8]> + AsRef<[u8]> + Send + Sync + 'static
 {
 }
-impl<T> SharedPayload
-    for T where
-    T: ByteInit + Clone + AsMut<[u8]> + AsRef<[u8]> + Send + Sync + 'static,
+impl<T> SharedPayload for T where
+    T: ByteInit + Clone + AsMut<[u8]> + AsRef<[u8]> + Send + Sync + 'static
 {
 }
 
@@ -262,10 +261,7 @@ mod tests {
     type Region = [u8; 4096];
 
     fn temp_domain(label: &str) -> SharedDomain {
-        let dir = std::env::temp_dir().join(format!(
-            "novomq-sm-{label}-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir = std::env::temp_dir().join(format!("novomq-sm-{label}-{}", uuid::Uuid::new_v4()));
         SharedDomain::open(&dir).unwrap()
     }
 
