@@ -217,7 +217,7 @@ mod test {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_family = "unix")]
 #[cfg(test)]
 mod tb_test {
     use super::*;
@@ -263,7 +263,7 @@ mod tb_test {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(target_family = "unix")]
 #[cfg(test)]
 mod spsc_test {
     use super::*;

@@ -114,6 +114,22 @@ pub unsafe fn spsc_in_memory<T, const N: usize>(mem: *mut u8) -> (Sender<T, N>, 
     })
 }
 
+/// Wrap an **already-initialised** shared-memory queue as a *producer only*:
+/// returns the sending side without re-initialising the region (the peer
+/// created and initialised it via [`spsc_in_memory`] and handed over the fd).
+///
+/// # Safety
+/// - `mem` must be a valid, already-initialised `Shared<T, N>` region
+///   (see [`spsc_in_memory`]).
+/// - `mem` must remain valid for as long as the returned [`Sender`] is used.
+#[allow(clippy::new_ret_no_self)]
+pub unsafe fn spsc_wrap<T, const N: usize>(mem: *mut u8) -> (Sender<T, N>, Receiver<T, N>) {
+    let shared = mem as *mut Shared<T, N>;
+    (unsafe { Sender::new(shared) }, unsafe {
+        Receiver::new(shared)
+    })
+}
+
 /// A single slot of the ring buffer: an optional value plus an occupied flag.
 #[derive(Debug)]
 struct Slot<T> {

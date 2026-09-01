@@ -1,11 +1,3 @@
-// The `TbTransport` measured by this bench is not implemented on macOS, so
-// the whole implementation is cfg-gated below and only a stub `main` runs there.
-#[cfg(target_os = "macos")]
-fn main() {
-    eprintln!("bench long_term_tb: not available on macOS (TbTransport unsupported). Exiting.");
-}
-
-#[cfg(not(target_os = "macos"))]
 mod bench_impl {
     use log::{debug, info, warn};
     use novomq::datalayer::{self, Datalayer, TbTransport, TbTransportConfig};
@@ -260,7 +252,6 @@ mod bench_impl {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
 fn main() {
     bench_impl::run();
 }
