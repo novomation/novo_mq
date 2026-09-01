@@ -1,4 +1,3 @@
-#[cfg(not(target_os = "macos"))]
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -32,7 +31,6 @@ fn test_nonblocking() {
     rx.join().unwrap();
 }
 
-#[cfg(not(target_os = "macos"))]
 #[test]
 fn test_nonblocking_tb() {
     use novomq::datalayer::{Datalayer, TbTransport, TbTransportConfig};

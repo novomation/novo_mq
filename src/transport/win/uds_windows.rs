@@ -121,7 +121,10 @@ impl BulkTransport for () {
                 read_fully(socket, &mut tmp[..take])?;
                 remaining = remaining.saturating_sub(take);
             }
-            return Err(ReceiveError::ExternalBufferToSmall((recv_buffer.len(), len)));
+            return Err(ReceiveError::ExternalBufferToSmall((
+                recv_buffer.len(),
+                len,
+            )));
         }
 
         read_fully(socket, &mut recv_buffer[..len])?;

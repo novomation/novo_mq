@@ -1,22 +1,21 @@
 pub use crate::transport::BulkTransport;
-#[cfg(target_os = "linux")]
+#[cfg(target_family = "unix")]
 pub use crate::transport::direct_shm::DirectShmGuard;
-#[cfg(target_os = "linux")]
+#[cfg(target_family = "unix")]
 pub use crate::transport::direct_shm::DirectShmTransport;
-#[cfg(target_os = "linux")]
+#[cfg(target_family = "unix")]
 pub use crate::transport::direct_shm::DirectShmTransportConfig;
 #[cfg(target_family = "windows")]
 pub use crate::transport::direct_shm::{
     DirectShmGuard, DirectShmTransport, DirectShmTransportConfig, read_shared, required_size,
     write_shared,
 };
-#[cfg(target_os = "linux")]
+#[cfg(target_family = "unix")]
 pub use crate::transport::direct_shm::{read_shared, required_size, write_shared};
-#[cfg(target_os = "linux")]
+#[cfg(target_family = "unix")]
 pub use crate::transport::spsc::{SpscTransport, SpscTransportConfig};
 #[cfg(target_family = "windows")]
 pub use crate::transport::spsc::{SpscTransport, SpscTransportConfig};
-#[cfg(not(target_os = "macos"))]
 pub use crate::transport::tb::{ByteInit, TbTransport, TbTransportConfig};
 // Public surface for direct / custom connection use (e.g. the shared-memory
 // transport's UDS + memfd negotiation). Re-exported from the otherwise-private
@@ -122,7 +121,7 @@ mod tests {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_family = "unix")]
 #[cfg(test)]
 mod tests_tb {
     use std::{
@@ -178,7 +177,7 @@ mod tests_tb {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(target_family = "unix")]
 #[cfg(test)]
 mod tests_spsc {
     use std::{

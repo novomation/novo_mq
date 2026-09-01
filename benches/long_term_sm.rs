@@ -14,14 +14,6 @@
 // cycle), matching the `direct_shm.rs` bench and the passing `two_threads_*`
 // unit tests.
 //
-// The `shared_memory` module is not implemented on macOS, so the whole
-// implementation is cfg-gated below and only a stub `main` runs there.
-#[cfg(target_os = "macos")]
-fn main() {
-    eprintln!("bench long_term_sm: not available on macOS (shared_memory unsupported). Exiting.");
-}
-
-#[cfg(not(target_os = "macos"))]
 mod bench_impl {
     use log::info;
     use novomq::shared_memory::SharedDomain;
@@ -271,7 +263,6 @@ mod bench_impl {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
 fn main() {
     bench_impl::run();
 }

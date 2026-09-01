@@ -1,11 +1,3 @@
-// The `SpscTransport` measured by this bench is not implemented on macOS, so
-// the whole implementation is cfg-gated below and only a stub `main` runs there.
-#[cfg(target_os = "macos")]
-fn main() {
-    eprintln!("bench long_term_spsc: not available on macOS (SpscTransport unsupported). Exiting.");
-}
-
-#[cfg(not(target_os = "macos"))]
 mod bench_impl {
     use log::{debug, info, warn};
     use novomq::ReceiveError;
@@ -257,7 +249,6 @@ mod bench_impl {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
 fn main() {
     bench_impl::run();
 }

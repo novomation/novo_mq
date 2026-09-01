@@ -4,11 +4,11 @@ pub mod algos;
 mod bulk_transport;
 #[cfg(target_family = "unix")]
 pub use bulk_transport::BulkTransport;
-#[cfg(target_os = "linux")]
+#[cfg(target_family = "unix")]
 pub mod direct_shm;
-#[cfg(target_os = "linux")]
+#[cfg(target_family = "unix")]
 pub mod spsc;
-#[cfg(target_os = "linux")]
+#[cfg(target_family = "unix")]
 pub mod tb;
 
 #[cfg(target_family = "unix")]
@@ -316,7 +316,7 @@ mod tests {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_family = "unix")]
 #[cfg(test)]
 mod tb_tests {
     use super::*;
@@ -604,7 +604,7 @@ mod tb_tests {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(target_family = "unix")]
 #[cfg(test)]
 mod tests_spsc {
     use super::*;

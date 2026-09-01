@@ -52,8 +52,8 @@ pub fn create_socket() -> Result<SOCKET, WindowsSocketError> {
         WSAStartup(2u16 << 8 | 2u16, &mut wsa_data);
     }
 
-    let fd = unsafe { socket(AF_UNIX as i32, SOCK_STREAM, 0) }
-        .map_err(WindowsSocketError::Windows)?;
+    let fd =
+        unsafe { socket(AF_UNIX as i32, SOCK_STREAM, 0) }.map_err(WindowsSocketError::Windows)?;
     set_nonblocking(fd, true)?;
     Ok(fd)
 }
