@@ -11,9 +11,9 @@ use std::{
     str::FromStr,
 };
 use windows::Win32::Networking::WinSock::{
-    ADDRESS_FAMILY, AF_UNIX, FIONBIO, SOCK_DGRAM, SOCK_SEQPACKET, SOCK_STREAM, SOCKADDR,
-    SOCKADDR_UN, SOCKET, SOCKET_ERROR, WSADATA, WSAGetLastError, WSAStartup, closesocket,
-    getpeername, getsockname, ioctlsocket, socket,
+    ADDRESS_FAMILY, AF_UNIX, FIONBIO, SOCK_STREAM, SOCKADDR, SOCKADDR_UN, SOCKET, SOCKET_ERROR,
+    WSADATA, WSAGetLastError, WSAStartup, closesocket, getpeername, getsockname, ioctlsocket,
+    socket,
 };
 
 /// Hook for attaching connection-specific state/behaviour (e.g. a shared-memory
@@ -52,7 +52,7 @@ pub fn create_socket() -> Result<SOCKET, WindowsSocketError> {
         WSAStartup(2u16 << 8 | 2u16, &mut wsa_data);
     }
 
-    let fd = unsafe { socket(AF_UNIX as i32, SOCK_SEQPACKET, 0) }
+    let fd = unsafe { socket(AF_UNIX as i32, SOCK_STREAM, 0) }
         .map_err(WindowsSocketError::Windows)?;
     set_nonblocking(fd, true)?;
     Ok(fd)

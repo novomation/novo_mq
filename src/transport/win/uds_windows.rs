@@ -28,13 +28,10 @@ impl BulkTransport for () {
     }
 
     fn send_one_msg(&mut self, socket: SOCKET, msg: &[u8]) -> Result<usize, SendError> {
-        let ret = unsafe {
-            send(
-                socket,
-                &(msg.len() as u16).to_le_bytes(),
-                SEND_RECV_FLAGS(0),
-            )
-        };
+        // 8-byte (usize) length prefix so payloads larger than 64 KiB (the
+        // old u16 limit) are framed correctly. Matches `tb_windows::send_usize`.
+        let len_bytes = msg.len().to_le_bytes();
+        let ret = unsafe { send(socket, &len_bytes, SEND_RECV_FLAGS(0)) };
         match return_to_result(ret) {
             Ok(_) => (),
             Err(WindowsSocketError::WinsockError(WinsockError::Connreset)) => {
@@ -42,7 +39,7 @@ impl BulkTransport for () {
             }
             Err(err) => return Err(SendError::OsError(err)),
         }
-        assert_eq!(ret, 2);
+        assert_eq!(ret, len_bytes.len() as i32);
         debug!("send len={}", msg.len());
 
         let ret = unsafe { send(socket, msg, SEND_RECV_FLAGS(0)) };
@@ -64,7 +61,7 @@ impl BulkTransport for () {
         socket: SOCKET,
         recv_buffer: &mut [u8],
     ) -> Result<usize, ReceiveError> {
-        let mut len = [0u8; 2];
+        let mut len = [0u8; size_of::<usize>()];
         let ret = unsafe { recv(socket, &mut len, SEND_RECV_FLAGS(0)) };
         match return_to_result(ret) {
             Ok(_) => (),
@@ -76,54 +73,59 @@ impl BulkTransport for () {
         if ret == 0 {
             return Ok(0);
         }
-        assert_eq!(ret, 2);
-        let len = u16::from_le_bytes(len);
+        assert_eq!(ret, size_of::<usize>() as i32);
+        let len = usize::from_le_bytes(len);
         debug!("recv len={len}");
-        loop {
-            let len_min = (len as usize).min(recv_buffer.len());
-            let ret = unsafe { recv(socket, &mut recv_buffer[0..len_min], SEND_RECV_FLAGS(0)) };
-            match return_to_result(ret) {
-                Ok(_) => (),
-                Err(WindowsSocketError::WinsockError(WinsockError::Wouldblock)) => {
-                    continue;
-                }
-                Err(err) => return Err(ReceiveError::OsError(err)),
-            }
-            debug!("recv buf={:?} ret={ret}", &recv_buffer[0..ret as usize]);
-            if ret < len as i32 {
-                // clear pipe be drop bytes
-                let mut buf = [0u8; 32];
-                let mut len_left = len as i32 - ret;
-                loop {
-                    if len_left == 0 {
-                        break;
-                    }
-                    let len_this_iteration = len_left.min(buf.len() as i32);
-                    let ret2 = unsafe {
-                        recv(
-                            socket,
-                            &mut buf[0..len_this_iteration as usize],
-                            SEND_RECV_FLAGS(0),
-                        )
-                    };
-                    match return_to_result(ret2) {
-                        Ok(_) => (),
-                        Err(WindowsSocketError::WinsockError(WinsockError::Wouldblock)) => {
-                            continue;
-                        }
-                        Err(err) => return Err(ReceiveError::OsError(err)),
-                    }
-                    len_left = len_left.saturating_sub(ret2);
-                }
 
-                return Err(ReceiveError::ExternalBufferToSmall((
-                    recv_buffer.len(),
-                    len as usize,
-                )));
+        // Reads `n` bytes fully (retrying on WSAEWOULDBLOCK); returns the peer's
+        // zero-byte reset as `RecvError::OsError(...Connreset)`.
+        let read_fully = |socket: SOCKET, dst: &mut [u8]| -> Result<(), ReceiveError> {
+            let mut got = 0usize;
+            while got < dst.len() {
+                let ret = unsafe { recv(socket, &mut dst[got..], SEND_RECV_FLAGS(0)) };
+                match return_to_result(ret) {
+                    Ok(_) => (),
+                    Err(WindowsSocketError::WinsockError(WinsockError::Wouldblock)) => {
+                        std::thread::yield_now();
+                        continue;
+                    }
+                    Err(err) => return Err(ReceiveError::OsError(err)),
+                }
+                let n = ret as usize;
+                if n == 0 {
+                    return Err(ReceiveError::OsError(WindowsSocketError::WinsockError(
+                        WinsockError::Connreset,
+                    )));
+                }
+                got += n;
             }
+            Ok(())
+        };
 
-            return Ok(ret as usize);
+        if len == 0 {
+            return Ok(0);
         }
+
+        if recv_buffer.len() < len {
+            // Caller's buffer is too small: drain the whole message so the
+            // socket stream stays aligned for the next message.
+            log::warn!("recv: buffer too small ({} < {len})", recv_buffer.len());
+            let chunk = recv_buffer.len();
+            if chunk > 0 {
+                read_fully(socket, &mut recv_buffer[..chunk])?;
+            }
+            let mut tmp = vec![0u8; len.saturating_sub(chunk).min(65536).max(1)];
+            let mut remaining = len - chunk.min(len);
+            while remaining > 0 {
+                let take = tmp.len().min(remaining);
+                read_fully(socket, &mut tmp[..take])?;
+                remaining = remaining.saturating_sub(take);
+            }
+            return Err(ReceiveError::ExternalBufferToSmall((recv_buffer.len(), len)));
+        }
+
+        read_fully(socket, &mut recv_buffer[..len])?;
+        Ok(len)
     }
 }
 
