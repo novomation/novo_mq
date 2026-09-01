@@ -1,10 +1,9 @@
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
+#[cfg(not(target_os = "macos"))]
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
+use std::time::Duration;
 
 use novomq::datalayer::Datalayer;
 

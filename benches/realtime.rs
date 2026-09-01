@@ -1,5 +1,5 @@
 use log::{debug, info};
-use novomq::{datalayer::Datalayer, subscriber::Subscriber};
+use novomq::datalayer::Datalayer;
 use plotly::{Layout, Plot, Scatter, common::Mode, layout::Axis};
 use rt_tunex::{
     clock::{ClockId, get_time},

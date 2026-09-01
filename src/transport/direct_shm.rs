@@ -654,8 +654,13 @@ mod tests {
             let g = server.extra.lock();
             let v: u32 = u32::from_le_bytes(g.as_bytes()[..4].try_into().unwrap());
             v == (N - 1) as u32
-        }).join().unwrap();
-        assert!(saw_final, "consumer must observe the producer's final value (100KB payload)");
+        })
+        .join()
+        .unwrap();
+        assert!(
+            saw_final,
+            "consumer must observe the producer's final value (100KB payload)"
+        );
     }
 
     #[test]
@@ -708,7 +713,9 @@ mod tests {
             let g = server.extra.lock();
             let v: u32 = u32::from_le_bytes(g.as_bytes()[..4].try_into().unwrap());
             v == (N - 1) as u32
-        }).join().unwrap();
+        })
+        .join()
+        .unwrap();
         assert!(
             saw_final,
             "consumer must observe producer's final value with RT pinning"

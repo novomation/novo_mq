@@ -5,15 +5,15 @@ pub use crate::transport::direct_shm::DirectShmGuard;
 pub use crate::transport::direct_shm::DirectShmTransport;
 #[cfg(target_os = "linux")]
 pub use crate::transport::direct_shm::DirectShmTransportConfig;
-#[cfg(target_os = "linux")]
-pub use crate::transport::direct_shm::{read_shared, required_size, write_shared};
-#[cfg(target_os = "linux")]
-pub use crate::transport::spsc::{SpscTransport, SpscTransportConfig};
 #[cfg(target_family = "windows")]
 pub use crate::transport::direct_shm::{
     DirectShmGuard, DirectShmTransport, DirectShmTransportConfig, read_shared, required_size,
     write_shared,
 };
+#[cfg(target_os = "linux")]
+pub use crate::transport::direct_shm::{read_shared, required_size, write_shared};
+#[cfg(target_os = "linux")]
+pub use crate::transport::spsc::{SpscTransport, SpscTransportConfig};
 #[cfg(target_family = "windows")]
 pub use crate::transport::spsc::{SpscTransport, SpscTransportConfig};
 #[cfg(not(target_os = "macos"))]

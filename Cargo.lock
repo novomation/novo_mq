@@ -969,6 +969,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "rt_tunex"
 version = "0.5.0"
+source = "git+https://github.com/marcfir/rt_tunex.git?branch=develop#f9c95b970597faa9f1c629988ec7640708d27026"
 dependencies = [
  "bitflags",
  "libc",

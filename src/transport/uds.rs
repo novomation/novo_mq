@@ -191,7 +191,7 @@ fn macos_try_recv_one(
     // Always drain the full body so the stream stays aligned; if the caller's
     // buffer is too small we drain into a temporary buffer.
     let mut tmp: std::vec::Vec<u8> = std::vec::Vec::new();
-    let mut read_into: &mut [u8] = if oversized {
+    let read_into: &mut [u8] = if oversized {
         tmp.resize(msg_len, 0);
         tmp.as_mut_slice()
     } else {

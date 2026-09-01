@@ -66,7 +66,10 @@ impl MappedView {
 
 /// Creates a new named file mapping of `size` bytes and maps it into this
 /// process's address space.
-pub(crate) fn create_mapping(name: &CStr, size: u32) -> Result<(OwnedMapping, MappedView), TransportError> {
+pub(crate) fn create_mapping(
+    name: &CStr,
+    size: u32,
+) -> Result<(OwnedMapping, MappedView), TransportError> {
     let mapping = unsafe {
         CreateFileMappingA(
             INVALID_HANDLE_VALUE,
@@ -92,7 +95,10 @@ pub(crate) fn create_mapping(name: &CStr, size: u32) -> Result<(OwnedMapping, Ma
 
 /// Opens an existing named file mapping (created by the peer via
 /// [`create_mapping`]) and maps it into this process's address space.
-pub(crate) fn open_mapping(name: &CStr, size: u32) -> Result<(OwnedMapping, MappedView), TransportError> {
+pub(crate) fn open_mapping(
+    name: &CStr,
+    size: u32,
+) -> Result<(OwnedMapping, MappedView), TransportError> {
     let mapping = unsafe {
         OpenFileMappingA(
             FILE_MAP_ALL_ACCESS.0,
