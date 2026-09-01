@@ -68,9 +68,5 @@ name = "mem_test"
 harness = false
 
 [[bench]]
-name = "direct_shm"
-harness = false
-
-[[bench]]
 name = "long_term_sm"
 harness = false

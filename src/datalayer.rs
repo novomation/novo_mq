@@ -133,7 +133,7 @@ mod tests_tb {
         time::Duration,
     };
 
-    use crate::transport::tb::{ByteInit, TbTransport, TbTransportConfig};
+    use crate::transport::tb::{TbTransport, TbTransportConfig};
 
     use super::*;
     use test_log::test;

@@ -40,6 +40,7 @@ pub fn required_size<T>() -> usize {
 /// `mmap`-backed regions (page-aligned) always satisfy this; a plain byte buffer
 /// (e.g. `Vec<u8>`) generally does not and must be allocated with this alignment
 /// explicitly (e.g. via [`std::alloc::alloc`] and [`std::alloc::Layout`]).
+#[allow(unused)]
 pub fn required_align<T>() -> usize {
     std::mem::align_of::<Shared<T>>()
 }
@@ -82,6 +83,7 @@ impl<T> Reader<T> {
 
     /// Reads the latest available value.
     /// Returns [None] if the [Writer] has not written anything yet.
+    #[allow(unused)]
     #[inline]
     pub fn try_read(&mut self) -> Option<T>
     where
@@ -159,6 +161,7 @@ impl<T> Writer<T> {
 
     /// Peeks at the last value written by this [Writer] (without consuming it).
     /// Returns [None] if nothing has been written yet.
+    #[allow(unused)]
     #[inline]
     pub fn try_read(&mut self) -> Option<T>
     where
@@ -170,6 +173,7 @@ impl<T> Writer<T> {
     }
 
     /// Writes an new value.
+    #[allow(unused)]
     #[inline]
     pub fn write(&mut self, data: T) {
         // Drop old value and write new one

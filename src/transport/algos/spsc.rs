@@ -52,6 +52,7 @@ impl<T, const N: usize> Shared<T, N> {
     ///
     /// # Panics
     /// Panics (in debug builds) if `N` is not a power of two.
+    #[allow(clippy::new_ret_no_self)]
     fn new(mem: *mut Self) {
         debug_assert!(
             is_power_of_two(N),
@@ -81,6 +82,7 @@ pub const fn required_size<T, const N: usize>() -> usize {
 /// [`spsc_in_memory`]. `mmap`-backed regions (page-aligned) always satisfy
 /// this, but a plain `Vec<u8>` generally does not and must be allocated with
 /// this alignment explicitly (see `std::alloc::Layout`).
+#[allow(unused)]
 pub const fn required_align<T, const N: usize>() -> usize {
     std::mem::align_of::<Shared<T, N>>()
 }
@@ -107,22 +109,6 @@ const fn is_power_of_two(x: usize) -> bool {
 pub unsafe fn spsc_in_memory<T, const N: usize>(mem: *mut u8) -> (Sender<T, N>, Receiver<T, N>) {
     let shared = mem as *mut Shared<T, N>;
     Shared::new(shared);
-    (unsafe { Sender::new(shared) }, unsafe {
-        Receiver::new(shared)
-    })
-}
-
-/// Wrap an *already-initialised* shared-memory region (e.g. one that the
-/// producer side created via [`spsc_in_memory`] and mmap'd over a memfd)
-/// into a fresh `(Sender, Receiver)` pair **without re-initialising the
-/// memory**. Use this on the consumer/producer side that maps a region it
-/// does not own.
-///
-/// # Safety
-/// Same as [`spsc_in_memory`], except the memory must already contain a valid,
-/// initialised `Shared<T, N>` (do *not* use this to create a new queue).
-pub unsafe fn spsc_wrap<T, const N: usize>(mem: *mut u8) -> (Sender<T, N>, Receiver<T, N>) {
-    let shared = mem as *mut Shared<T, N>;
     (unsafe { Sender::new(shared) }, unsafe {
         Receiver::new(shared)
     })
@@ -183,11 +169,13 @@ impl<T, const N: usize> Sender<T, N> {
     }
 
     /// The queue's total capacity in items.
+    #[allow(unused)]
     pub const fn capacity(&self) -> usize {
         N
     }
 
     /// Best-effort number of items currently queued (relaxed atomic read).
+    #[allow(unused)]
     pub fn len(&self) -> usize {
         unsafe {
             (*self.shared)
@@ -198,6 +186,7 @@ impl<T, const N: usize> Sender<T, N> {
     }
 
     /// Best-effort `len() == 0`.
+    #[allow(unused)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -251,6 +240,7 @@ impl<T, const N: usize> Receiver<T, N> {
     /// # Safety
     /// The returned reference is only valid until the next call to
     /// `try_recv`/`try_send` that touches the same slot.
+    #[allow(unused)]
     pub fn peek(&self) -> Option<&T> {
         let read = unsafe { (*self.shared).read.load(Ordering::Acquire) };
         let rpos = read & (N - 1);
@@ -262,11 +252,13 @@ impl<T, const N: usize> Receiver<T, N> {
     }
 
     /// The queue's total capacity in items.
+    #[allow(unused)]
     pub const fn capacity(&self) -> usize {
         N
     }
 
     /// Best-effort number of items currently queued (relaxed atomic read).
+    #[allow(unused)]
     pub fn len(&self) -> usize {
         unsafe {
             (*self.shared)
@@ -277,6 +269,7 @@ impl<T, const N: usize> Receiver<T, N> {
     }
 
     /// Best-effort `len() == 0`.
+    #[allow(unused)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
