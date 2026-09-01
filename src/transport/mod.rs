@@ -345,7 +345,6 @@ mod tb_tests {
     };
     use test_log::test;
     type TbTransp = tb::TbTransport<[u8; 24]>;
-    type TbTranspWrongSize = tb::TbTransport<[u8; 26]>;
 
     #[test]
     fn test_bind_tb() {
@@ -399,6 +398,7 @@ mod tb_tests {
     #[cfg(not(target_family = "windows"))]
     #[test]
     fn wrong_peer_buffer_size() {
+        type TbTranspWrongSize = tb::TbTransport<[u8; 26]>;
         let sock_addr = uuid::Uuid::new_v4().to_string();
 
         let mut listener = UnixDatagramListener::<TbTransp>::bind(&sock_addr).unwrap();

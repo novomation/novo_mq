@@ -1,6 +1,6 @@
 use log::{debug, info, warn};
 use novomq::datalayer::Datalayer;
-const NO_BYTES: usize = 100_000;
+const NO_BYTES: usize = 80_000;
 use rt_tunex::{
     clock::{ClockId, get_time},
     mman::{MmanFlags, mlockall},
