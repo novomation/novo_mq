@@ -136,7 +136,6 @@ mod bench_impl {
     }
 
     type TbTrans = TbTransport<Payload>;
-    type TbTransR = TbTransport<Payload>;
 
     pub fn run() {
         let _ = mlockall(MmanFlags::MCL_CURRENT | MmanFlags::MCL_FUTURE)
