@@ -4,19 +4,32 @@ pub mod algos;
 mod bulk_transport;
 #[cfg(target_family = "unix")]
 pub use bulk_transport::BulkTransport;
-#[cfg(target_family = "unix")]
-pub mod direct_shm;
-#[cfg(target_family = "unix")]
-pub mod spsc;
-#[cfg(target_family = "unix")]
-pub mod tb;
 
-#[cfg(target_family = "unix")]
+// Per-OS transport backends. Each provides the `tb`, `spsc`, `direct_shm`
+// and `uds` (UnixDatagram/UnixDatagramListener) modules for that OS, so the
+// platform-specific socket/shared-memory machinery stays cleanly separated.
+#[cfg(target_os = "linux")]
+pub mod tb;
+#[cfg(target_os = "linux")]
+pub mod spsc;
+#[cfg(target_os = "linux")]
+pub mod direct_shm;
+#[cfg(target_os = "linux")]
 pub mod uds;
+
+#[cfg(target_os = "macos")]
+pub mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::tb_macos as tb;
+#[cfg(target_os = "macos")]
+pub use macos::spsc_macos as spsc;
+#[cfg(target_os = "macos")]
+pub use macos::direct_shm_macos as direct_shm;
+#[cfg(target_os = "macos")]
+pub use macos::uds_macos as uds;
+
 #[cfg(target_family = "windows")]
 pub mod win;
-#[cfg(target_family = "windows")]
-pub use uds::BulkTransport;
 #[cfg(target_family = "windows")]
 pub use win as uds;
 #[cfg(target_family = "windows")]
@@ -25,6 +38,8 @@ pub use win::direct_shm_windows as direct_shm;
 pub use win::spsc_windows as spsc;
 #[cfg(target_family = "windows")]
 pub use win::tb;
+#[cfg(target_family = "windows")]
+pub use win::BulkTransport;
 
 #[cfg(target_family = "unix")]
 pub type OsError = nix::Error;

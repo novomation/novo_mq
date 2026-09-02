@@ -336,13 +336,7 @@ impl<E: BulkTransport> UnixDatagram<E> {
 
         let extra = E::on_connect(fd.as_raw_fd(), config)?;
         #[cfg(target_os = "macos")]
-        // `getpeername` on a local `AF_UNIX` stream socket on macOS can
-        // intermittently return an empty path right after the connection is
-        // established (particularly when a prior connection on the same
-        // listener was accepted and dropped during a failed handshake).
-        // We know the peer's path by definition — it is the `addr` argument —
-        // so fall back to it.
-        let peer = peer_addr_of(&fd).or_else(|| Some(addr.to_string()));
+        let peer = peer_addr_of(&fd);
         let ud = UnixDatagram {
             socket: fd,
             extra,
