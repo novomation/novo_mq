@@ -334,9 +334,12 @@ pub struct UnixDatagram<E: BulkTransport = ()> {
 }
 impl<E: BulkTransport> Drop for UnixDatagram<E> {
     fn drop(&mut self) {
-        if let Some(local_addr) = self.local_addr() {
-            let _ = nix::unistd::unlink(local_addr.as_str());
-        }
+        // NOTE: do NOT unlink `local_addr()` here. For an accepted connection
+        // `getsockname` returns the *listener's* bound path, so unlinking would
+        // delete the publisher's socket file the moment any subscriber
+        // disconnects — new subscribers then get ENOENT forever. The path is
+        // owned (and unlinked) by `UnixDatagramListener::drop` alone; closing
+        // the fd (via `OwnedFd`) is all a connection has to clean up.
     }
 }
 impl<E: BulkTransport> UnixDatagram<E> {
@@ -440,7 +443,10 @@ mod tests {
     use nix::sys::socket::SockType;
     use nix::sys::socket::{self, AddressFamily, SockFlag, UnixAddr};
 
-    use crate::transport::{TransportListener, uds::UnixDatagramListener};
+    use crate::transport::{
+        TransportListener,
+        uds::{UnixDatagram, UnixDatagramListener},
+    };
 
     #[test]
     fn test_bind_reuses_dangling_socket_file() {
@@ -465,5 +471,36 @@ mod tests {
         assert!(Path::new(&sock_addr).exists());
         let listener = UnixDatagramListener::<()>::bind(&sock_addr).unwrap();
         assert_eq!(listener.local_addr(), Some(sock_addr));
+    }
+
+    /// Dropping an accepted connection must NOT unlink the listener's socket
+    /// file — `getsockname` on an accepted fd returns the listener's bound
+    /// path, and unlinking it would make the publisher unreachable for every
+    /// later subscriber (regression: live data stopped after one disconnect).
+    #[test]
+    fn test_accepted_connection_drop_keeps_listener_path() {
+        let sock_addr = uuid::Uuid::new_v4().to_string();
+        let mut listener = UnixDatagramListener::<()>::bind(&sock_addr).unwrap();
+
+        let client = UnixDatagram::<()>::connect(&sock_addr, ()).unwrap();
+        let accepted = loop {
+            match listener.accept() {
+                Ok(c) => break c,
+                Err(crate::transport::TransportError::WouldBlock) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => panic!("accept failed: {e:?}"),
+            }
+        };
+
+        drop(accepted);
+        drop(client);
+        assert!(
+            Path::new(&sock_addr).exists(),
+            "listener socket file must survive connection drops"
+        );
+
+        // A new subscriber can still connect.
+        let _client2 = UnixDatagram::<()>::connect(&sock_addr, ()).unwrap();
     }
 }
