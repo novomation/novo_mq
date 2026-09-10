@@ -222,6 +222,7 @@ mod test {
 mod tb_test {
     use super::*;
     use crate::{datalayer::TbTransport, topic::encode, transport::tb::TbTransportConfig};
+    use std::fs::{create_dir_all, remove_dir};
     use test_log::test;
 
     type TbTransp = TbTransport<[u8; 24]>;
