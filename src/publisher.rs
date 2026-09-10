@@ -3,8 +3,8 @@ use crate::{
     helpers::set_calling_thread_to_nrt,
     topic::socket_path,
     transport::{
-        BulkTransport, SendError, TransportConnection, TransportError, TransportListener,
         uds::{UnixDatagram, UnixDatagramListener},
+        BulkTransport, SendError, TransportConnection, TransportError, TransportListener,
     },
 };
 use log::{debug, error, info};
@@ -12,8 +12,8 @@ use std::{
     fmt::Debug,
     path::Path,
     sync::{
-        Arc, Condvar, Mutex,
         atomic::{AtomicUsize, Ordering},
+        Arc, Condvar, Mutex,
     },
     thread::JoinHandle,
     time::Duration,
