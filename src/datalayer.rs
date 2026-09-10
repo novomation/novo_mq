@@ -1,5 +1,8 @@
-pub use crate::transport::uds::{BulkTransport, ByteInit, TbTransport, TbTransportConfig};
-use crate::{publisher::Publisher, subscriber::Subscriber, transport::TransportError};
+pub use crate::transport::{
+    BulkTransport,
+    tb::{ByteInit, TbTransport, TbTransportConfig},
+};
+use crate::{TransportError, publisher::Publisher, subscriber::Subscriber};
 use log::{debug, warn};
 use std::path::{Path, PathBuf};
 
@@ -62,6 +65,8 @@ mod tests {
         },
         time::Duration,
     };
+
+    use crate::transport::tb::TbTransport;
 
     use super::*;
     use test_log::test;

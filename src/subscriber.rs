@@ -3,8 +3,7 @@ use crate::{
     helpers::set_calling_thread_to_nrt,
     topic::socket_path,
     transport::{
-        ReceiveError, TransportConnection, TransportError,
-        uds::{BulkTransport, UnixDatagram},
+        uds::UnixDatagram, BulkTransport, ReceiveError, TransportConnection, TransportError,
     },
 };
 use log::{debug, info, trace, warn};
@@ -13,8 +12,8 @@ use std::{
     marker::PhantomData,
     path::Path,
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
+        Arc,
     },
     time::Duration,
 };
@@ -64,7 +63,10 @@ impl<T: BulkTransport + 'static> Subscriber<T> {
                             }
                             Err(TransportError::PeerDoesNotExist) => (),
                             Err(err) => {
-                                info!("Could not connect {err}");
+                                // Expected while the publisher has not started
+                                // yet (late join) — retried every 100 ms, so
+                                // keep it off the Info level to avoid spam.
+                                debug!("Could not connect {err}");
                             }
                         }
                         std::thread::sleep(Duration::from_millis(100));
@@ -160,7 +162,7 @@ mod test {
     use super::*;
     use crate::{
         publisher::Publisher,
-        transport::uds::{TbTransport, TbTransportConfig},
+        transport::tb::{TbTransport, TbTransportConfig},
     };
     use test_log::test;
     type TbTransp = TbTransport<[u8; 24]>;
