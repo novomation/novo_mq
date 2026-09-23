@@ -1,10 +1,10 @@
 use crate::{
+    transport::{
+        bulk_transport::BulkTransport, TransportConnection, TransportError, TransportListener,
+        MAX_CONNECTIONS,
+    },
     ReceiveError::{self},
     SendError::{self},
-    transport::{
-        MAX_CONNECTIONS, TransportConnection, TransportError, TransportListener,
-        bulk_transport::BulkTransport,
-    },
 };
 #[cfg(not(target_os = "macos"))]
 use nix::sys::socket::RecvMsg;
@@ -13,7 +13,7 @@ use nix::{
         EAGAIN, EALREADY, ECONNREFUSED, ECONNRESET, EINPROGRESS, ENOENT, ENOSPC, EPIPE,
     },
     sys::socket::{self, AddressFamily, Backlog, MsgFlags, SockFlag, SockType, UnixAddr},
-    sys::stat::{SFlag, lstat},
+    sys::stat::{lstat, SFlag},
 };
 #[cfg(not(target_os = "macos"))]
 use std::io::IoSliceMut;
@@ -444,8 +444,8 @@ mod tests {
     use nix::sys::socket::{self, AddressFamily, SockFlag, UnixAddr};
 
     use crate::transport::{
-        TransportListener,
         uds::{UnixDatagram, UnixDatagramListener},
+        TransportListener,
     };
 
     #[test]
