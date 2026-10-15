@@ -252,11 +252,13 @@ impl UnixDatagram {
             )
         };
         match return_to_result(ret) {
-            Ok(_) => {
-                return Err(TransportError::Os(WindowsSocketError::WinsockError(
-                    WinsockError::Fault,
-                )));
-            }
+            // A non-blocking connect on Windows can complete synchronously
+            // as soon as the listener is ready. That is a successful
+            // connection, not an error: the select below returns
+            // immediately for an already established socket. Treating this
+            // case as an error made the subscriber management thread retry
+            // forever and a returning subscriber never connected.
+            Ok(_) => {}
             Err(WindowsSocketError::WinsockError(WinsockError::Wouldblock)) => {
                 // Do nothing here. We wait with select
             }
