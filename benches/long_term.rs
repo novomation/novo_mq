@@ -167,7 +167,7 @@ fn main() {
     });
     let mut mma = MinMaxAvgCollector::new();
     loop {
-        while let Some(lat) = rx_lat.try_recv() {
+        while let Ok(lat) = rx_lat.try_recv() {
             mma.insert(lat as i64);
         }
         let mma_state = mma.collect();

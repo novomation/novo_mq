@@ -2,7 +2,7 @@
 name = "novomq"
 version = "0.5.0"
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.88"
 authors = ["Marc Fischer <marc.fischer@novomation.de>"]
 description = "Simple real-time messaging "
 license = "MIT OR Apache-2.0"
@@ -13,12 +13,12 @@ categories = ["network-programming"]
 
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 heapless = "0.9"
 log = "0.4"
 thiserror = "2.0"
 uuid = { version = "1", features = ["v4"] }
-waitfree-sync = "0.3"
+waitfree-sync = "0.4"
 rtsan-standalone = { version = "0.3.0", optional = true }
 rt_tunex = { version = "0.5.0" }
 

@@ -42,10 +42,10 @@ impl Publisher {
         let socket_addr = socket_path(domain, &topic);
         // A concurrent drop of another datalayer handle may have removed the
         // domain directory, so make sure it exists before binding.
-        if let Some(parent) = Path::new(&socket_addr).parent() {
-            if !parent.as_os_str().is_empty() {
-                let _ = std::fs::create_dir_all(parent);
-            }
+        if let Some(parent) = Path::new(&socket_addr).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            let _ = std::fs::create_dir_all(parent);
         }
         let mut listener = UnixDatagramListener::bind(&socket_addr)
             .inspect_err(|err| error!("Could not bind {err}"))?;
@@ -136,7 +136,7 @@ impl Publisher {
         if message.is_empty() {
             return Err(SendError::ZeroBytes);
         }
-        while let Some(con) = self.rx_connection.try_recv() {
+        while let Ok(con) = self.rx_connection.try_recv() {
             self.connections.push((con, 0));
         }
         debug!(
@@ -176,10 +176,10 @@ impl Drop for Publisher {
         }
         // The mgmt thread's drop unlinked the socket file. If no other
         // publisher socket is left, remove the now-empty domain directory.
-        if let Some(parent) = Path::new(&self.socket_addr).parent() {
-            if !parent.as_os_str().is_empty() {
-                let _ = std::fs::remove_dir(parent);
-            }
+        if let Some(parent) = Path::new(&self.socket_addr).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            let _ = std::fs::remove_dir(parent);
         }
     }
 }
