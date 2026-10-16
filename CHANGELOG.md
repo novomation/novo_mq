@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+### Fixed
+
+* Treat synchronous completion of a non-blocking connect on Windows as a successful connection instead of an error, so returning subscribers can reconnect to a running publisher.
+
 ## [0.5.0] - 2026-07-07
 
 ### Added
