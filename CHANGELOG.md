@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 * Treat synchronous completion of a non-blocking connect on Windows as a successful connection instead of an error, so returning subscribers can reconnect to a running publisher.
+* Stop `UnixDatagram::drop` from removing `local_addr`: an accepted socket reports the listener's path, so pruning a dead subscriber connection deleted the publisher's listener file and no returning subscriber could connect again (Linux and Windows).
 
 ## [0.5.0] - 2026-07-07
 

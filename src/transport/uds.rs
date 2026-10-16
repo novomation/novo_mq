@@ -116,11 +116,11 @@ pub struct UnixDatagram {
     socket: OwnedFd,
 }
 impl Drop for UnixDatagram {
-    fn drop(&mut self) {
-        if let Some(local_addr) = self.local_addr() {
-            let _ = nix::unistd::unlink(local_addr.as_str());
-        }
-    }
+    // Intentionally empty: a `UnixDatagram` is never bound. For a `connect`ed
+    // socket the local address is anonymous, and for an `accept`ed socket it
+    // is the *listener's* path. The bound path is owned by `UnixDatagramListener`,
+    //  which unlinks it in its own `Drop`.
+    fn drop(&mut self) {}
 }
 impl UnixDatagram {
     pub fn connect(addr: &str) -> Result<Self, TransportError> {
