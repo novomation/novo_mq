@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 * Treat synchronous completion of a non-blocking connect on Windows as a successful connection instead of an error, so returning subscribers can reconnect to a running publisher.
+* Stop `UnixDatagram::drop` from removing `local_addr`: an accepted socket reports the listener's path, so pruning a dead subscriber connection deleted the publisher's listener file and no returning subscriber could connect again (Linux and Windows).
+* Make domain directory cleanup robust for shared domains: dropping a datalayer handle or a publisher only ever removes the domain directory while it is empty, so a domain with a running publisher is never deleted out from under it; and `Publisher::new` recreates the domain directory if a concurrent cleanup removed it, so no publisher creation can fail because of it.
+* Fix a deadlock in `Publisher::new`: the management-thread init handshake shared the subscriber-count condvar, so an accept landing before the creating thread reached the init wait blocked publisher creation forever (observed as an indefinite hang under load with a subscriber that connected early). The subscriber count now starts at zero, the true initial state, and the init handshake is removed.
+
+### Added
+
+* Regression tests for returning-subscriber reconnection, for shared-domain cleanup (domain survives handle drops, is cleaned up when empty, and a publisher recreates a removed domain), and for a subscriber connecting before the publisher is ready.
 
 ## [0.5.0] - 2026-07-07
 

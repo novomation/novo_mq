@@ -27,6 +27,7 @@ pub struct Publisher {
     number_of_subscribers: Arc<AtomicUsize>,
 
     topic: String,
+    socket_addr: String,
     condvar: Arc<(Mutex<usize>, Condvar)>,
     join_mgmt: Option<JoinHandle<()>>,
 }
@@ -39,13 +40,25 @@ impl Publisher {
 
         let number_of_subscribers = Arc::new(AtomicUsize::new(0));
         let socket_addr = socket_path(domain, &topic);
+        // A concurrent drop of another datalayer handle may have removed the
+        // (then empty) domain directory, so make sure it exists before binding.
+        if let Some(parent) = Path::new(&socket_addr).parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
         let mut listener = UnixDatagramListener::bind(&socket_addr)
             .inspect_err(|err| error!("Could not bind {err}"))?;
 
         let (mut tx_connection, rx_connection) = spsc::spsc::<UnixDatagram>(64);
         let cancel_token = CancelationToken::new();
 
-        let condvar = Arc::new((Mutex::new(usize::MAX), Condvar::new()));
+        // The counter starts at zero, which is the true initial state (no
+        // subscriber is connected yet). Waiting for a management-thread
+        // "started" signal on this same condvar used to deadlock: an accept
+        // landing before the creating thread reached that wait raised the
+        // count, and the wait for it to return to zero could never be met.
+        let condvar = Arc::new((Mutex::new(0), Condvar::new()));
         let join_mgmt = std::thread::spawn({
             let cancel_token = cancel_token.clone();
             let topic = topic.as_ref().to_string();
@@ -57,10 +70,6 @@ impl Publisher {
                     "Start mgmt thread for publisher `{topic}` ({}) and waiting for subscribers",
                     listener.local_addr().unwrap_or_default()
                 );
-                if let Ok(mut c) = condvar.0.lock() {
-                    *c = 0;
-                }
-                condvar.1.notify_one();
                 while !cancel_token.is_cancelled() {
                     let res = listener.accept();
                     match res {
@@ -90,18 +99,12 @@ impl Publisher {
             }
         });
 
-        let (num, cvar) = &*condvar.clone();
-        let mut num = num.lock().unwrap();
-
-        while *num != 0_usize {
-            num = cvar.wait(num).unwrap();
-        }
-
         Ok(Self {
             connections: Vec::with_capacity(64),
             rx_connection,
             cancel_token,
             topic: topic.as_ref().to_string(),
+            socket_addr,
             condvar,
             number_of_subscribers,
             join_mgmt: Some(join_mgmt),
@@ -171,6 +174,13 @@ impl Drop for Publisher {
         if let Some(join_mgmt) = self.join_mgmt.take() {
             let _ = join_mgmt.join();
         }
+        // The mgmt thread's drop unlinked the socket file. If no other
+        // publisher socket is left, remove the now-empty domain directory.
+        if let Some(parent) = Path::new(&self.socket_addr).parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = std::fs::remove_dir(parent);
+            }
+        }
     }
 }
 impl Debug for Publisher {
@@ -189,9 +199,11 @@ impl Debug for Publisher {
 
 #[cfg(test)]
 mod test {
-    use std::fs::{create_dir_all, remove_dir};
+    use std::fs::create_dir_all;
+    use std::path::Path;
 
     use super::*;
+    use crate::subscriber::Subscriber;
     use test_log::test;
 
     #[test]
@@ -212,7 +224,10 @@ mod test {
 
         publ.try_send("iufvghj".as_bytes()).unwrap();
         publ.try_send("iufvghj".as_bytes()).unwrap();
-        remove_dir("publisher_smoke").unwrap();
+        // Drop the publisher first: its listener owns the socket file and
+        // unlinks it on drop, and the empty domain is removed with it.
+        drop(publ);
+        assert!(!Path::new("publisher_smoke").exists());
     }
 
     #[test]
@@ -225,6 +240,97 @@ mod test {
             TransportError::AddressInUse
         );
         drop(_publ);
-        remove_dir("test_publisher_on_same_topic").unwrap();
+        assert!(!Path::new("test_publisher_on_same_topic").exists());
+    }
+
+    /// Dropping a subscriber and pruning its dead connection must not delete
+    /// the publisher's listener file: an accepted socket reports the
+    /// listener's path from `getsockname`, so the old `UnixDatagram::drop`
+    /// unlinked the listener the moment the dead connection was pruned and
+    /// no returning subscriber could connect again.
+    #[test]
+    fn test_returning_subscriber_after_drop() {
+        let domain = "reconnecting_subscriber";
+        let _ = std::fs::remove_dir_all(domain);
+        create_dir_all(domain).unwrap();
+        let mut publ = Publisher::new(domain, "topic").unwrap();
+
+        let sub = Subscriber::new(domain, "topic").unwrap();
+        sub.wait_until_connected();
+        publ.wait_for_subscribers(1);
+        drop(sub);
+
+        // Flush the dead connection: this is what prunes it (and used to
+        // delete the listener file).
+        for _ in 0..20 {
+            let _ = publ.try_send(b"flush");
+            if !Path::new(&socket_path(domain, "topic")).exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            Path::new(&socket_path(domain, "topic")).exists(),
+            "the publisher listener file must survive the subscriber drop"
+        );
+
+        // A new subscriber must be able to connect again and receive.
+        let mut sub = Subscriber::new(domain, "topic").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !sub.has_connection() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "returning subscriber never reconnected"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let mut buf = [0u8; 64];
+        loop {
+            publ.try_send(b"hello again").unwrap();
+            if let Ok((len, _)) = sub.try_recv(&mut buf) {
+                assert_eq!(&buf[..len], b"hello again");
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "returning subscriber never received a message"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        drop(sub);
+        drop(publ);
+        assert!(
+            !Path::new(domain).exists(),
+            "empty domain must be cleaned up when the last publisher is dropped"
+        );
+    }
+
+    /// A subscriber that connects before the publisher's management thread is
+    /// fully up must not block `Publisher::new` or `wait_for_subscribers`:
+    /// the subscriber count starts at zero, so an accept that lands before
+    /// the wait is simply observed as the current value. (Regression: the
+    /// management-thread init handshake shared this condvar, and an accept
+    /// landing before the creating thread reached its init wait deadlocked
+    /// publisher creation.)
+    #[test]
+    fn subscriber_connecting_before_publisher_is_ready() {
+        let domain = "early_subscriber";
+        let _ = std::fs::remove_dir_all(domain);
+        create_dir_all(domain).unwrap();
+        // The subscriber keeps retrying until the listener exists:
+        let mut sub = Subscriber::new(domain, "topic").unwrap();
+        let mut publ = Publisher::new(domain, "topic").unwrap();
+
+        sub.wait_until_connected();
+        // The accept may have happened while `Publisher::new` was still
+        // setting up; the wait must observe it either way:
+        publ.wait_for_subscribers(1);
+        publ.try_send(b"hello").unwrap();
+        let mut buf = [0u8; 64];
+        let (len, _) = sub.try_recv(&mut buf).unwrap();
+        assert_eq!(&buf[..len], b"hello");
+        drop(sub);
+        drop(publ);
+        assert!(!Path::new(domain).exists());
     }
 }
