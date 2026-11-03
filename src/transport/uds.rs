@@ -97,9 +97,13 @@ impl TransportListener<UnixDatagram> for UnixDatagramListener {
     fn accept(&mut self) -> Result<UnixDatagram, TransportError> {
         let ret = socket::accept(self.socket.as_raw_fd());
         match ret {
-            Ok(fd) => Ok(UnixDatagram {
-                socket: unsafe { OwnedFd::from_raw_fd(fd) },
-            }),
+            Ok(fd) => {
+                // On Linux `accept()` does not inherit O_NONBLOCK from the
+                // listening socket
+                let socket = unsafe { OwnedFd::from_raw_fd(fd) };
+                set_nonblock(socket.as_raw_fd())?;
+                Ok(UnixDatagram { socket })
+            }
             Err(EAGAIN) => Err(TransportError::WouldBlock),
             Err(err) => Err(TransportError::Os(err)),
         }
@@ -157,9 +161,12 @@ impl TransportConnection for UnixDatagram {
     }
 
     fn send(&self, msg: &[u8]) -> Result<usize, super::SendError> {
-        let ret = socket::send(self.socket.as_raw_fd(), msg, MsgFlags::empty());
+        let ret = socket::send(self.socket.as_raw_fd(), msg, MsgFlags::MSG_DONTWAIT);
         match ret {
             Ok(len) => Ok(len),
+            // The peer receive buffer is full. `Publisher::try_send` counts it as a lost
+            // message so that publishing must never block on a slow subscriber.
+            Err(EAGAIN) => Err(SendError::OsBufferFull),
             // ECONNRESET means the peer has already torn the connection down.
             // EPIPE means this socket still looked connected, but this write is the first
             // operation that observed the closed peer and the kernel reports a broken pipe.

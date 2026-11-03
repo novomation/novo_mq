@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+### Fixed
+
+* Accepted publisher connections are now non-blocking on Linux
+
 ## [0.5.1] - 2026-10-16
 
 ### Changed

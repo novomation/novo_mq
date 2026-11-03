@@ -317,4 +317,69 @@ mod test {
         drop(publ);
         assert!(!Path::new(domain).exists());
     }
+
+    /// Regression: an accepted connection socket used to be blocking on
+    /// Linux (`accept()` does not inherit O_NONBLOCK from the listener, and
+    /// the send carried no `MSG_DONTWAIT`). Once a subscriber stopped
+    /// draining its socket receive buffer — filled ~50 cycles later with 4
+    /// KiB process images — a realtime publisher's `try_send` parked in the
+    /// kernel for as long as the buffer stayed full, stalling everything the
+    /// publishing thread was responsible for (observed as mass datagram
+    /// timeouts in the EtherCAT master). A full peer buffer must drop the
+    /// message instead of blocking.
+    #[test]
+    fn slow_subscriber_never_blocks_the_publisher() {
+        let domain = "slow_subscriber_never_blocks";
+        let _ = std::fs::remove_dir_all(domain);
+        create_dir_all(domain).unwrap();
+
+        let publ = Publisher::new(domain, "topic").unwrap();
+
+        // The sends run on their own thread so a (would-be) blocking send
+        // fails the assert instead of hanging the whole test process.
+        let (tx_done, rx_done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            // The subscriber connects but never reads a single message: with
+            // realistic message sizes the default socket receive buffer
+            // overflows within milliseconds of sending.
+            let sub = Subscriber::new(domain, "topic").unwrap();
+            sub.wait_until_connected();
+            let mut publ = publ;
+            publ.wait_for_subscribers(1);
+
+            let message = [0x5Au8; 4096];
+            let sends = 1000;
+            let start = std::time::Instant::now();
+            for _ in 0..sends {
+                // With the fix every send returns promptly: a full peer
+                // buffer is counted as a lost message, never an error.
+                publ.try_send(&message).unwrap();
+            }
+            let elapsed = start.elapsed();
+            drop(sub);
+            drop(publ);
+            let cleaned = !Path::new(domain).exists();
+            let _ = tx_done.send((elapsed, cleaned));
+        });
+
+        let deadline = std::time::Duration::from_secs(10);
+        let (elapsed, cleaned) = rx_done
+            .recv_timeout(deadline)
+            .unwrap_or_else(|_| {
+                panic!(
+                    "publisher.try_send blocked on the full subscriber socket (not done within {deadline:?})"
+                )
+            });
+        // 4 MiB onto a ~208 KiB buffer: without the fix this stalls in the
+        // kernel ~forever; with the fix the overflowing messages are dropped
+        // in-place and the loop stays fast.
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "the sends onto the full subscriber buffer took {elapsed:?} — the publisher must not block"
+        );
+        assert!(
+            cleaned,
+            "empty domain must be cleaned up when the last publisher is dropped"
+        );
+    }
 }

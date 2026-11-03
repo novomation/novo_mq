@@ -303,6 +303,11 @@ impl TransportConnection for UnixDatagram {
             Err(WindowsSocketError::WinsockError(WinsockError::Connreset)) => {
                 return Err(SendError::ConnectionEnded);
             }
+            // The peer receive buffer is full: drop this send instead of
+            // erroring (the accepted socket is non-blocking).
+            Err(WindowsSocketError::WinsockError(WinsockError::Wouldblock)) => {
+                return Err(SendError::OsBufferFull);
+            }
             Err(err) => return Err(SendError::OsError(err)),
         }
         assert_eq!(ret, 2);
@@ -313,6 +318,11 @@ impl TransportConnection for UnixDatagram {
             Ok(_) => (),
             Err(WindowsSocketError::WinsockError(WinsockError::Connreset)) => {
                 return Err(SendError::ConnectionEnded);
+            }
+            // The peer receive buffer is full: drop this send instead of
+            // erroring (the accepted socket is non-blocking).
+            Err(WindowsSocketError::WinsockError(WinsockError::Wouldblock)) => {
+                return Err(SendError::OsBufferFull);
             }
             Err(err) => return Err(SendError::OsError(err)),
         }
