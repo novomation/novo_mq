@@ -14,7 +14,7 @@ use nix::{
 };
 use std::{
     io::IoSliceMut,
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    os::fd::{AsFd, AsRawFd, OwnedFd},
     time::{Duration, Instant},
 };
 
@@ -191,14 +191,13 @@ impl UnixDatagramListener {
 }
 impl TransportListener<UnixDatagram> for UnixDatagramListener {
     fn accept(&mut self) -> Result<UnixDatagram, TransportError> {
-        let ret = socket::accept(self.socket.as_raw_fd());
+        let ret = socket::accept(self.socket.as_fd());
         match ret {
-            Ok(fd) => {
+            Ok(socket) => {
                 // On Linux `accept()` does not inherit O_NONBLOCK from the
                 // listening socket. The accepted socket carries the
                 // publisher's traffic: keep it non-blocking so that
                 // `send` never parks the publishing thread.
-                let socket = unsafe { OwnedFd::from_raw_fd(fd) };
                 set_nonblock(socket.as_raw_fd())?;
                 Ok(UnixDatagram {
                     socket,

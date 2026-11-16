@@ -22,7 +22,7 @@ rtsan-standalone = { version = "0.3.0", optional = true }
 rt_tunex = { version = "0.6.0" }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.32", features = ["socket", "fs", "uio"] }
+nix = { version = "0.32", features = ["socket", "fs", "uio", "process"] }
 
 
 [target.'cfg(windows)'.dependencies]
