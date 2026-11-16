@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+## [0.6.0] - 2026-11-16
+
 ### Added
 
 * Blocking receive for subscribers: `Subscriber::recv()` parks the calling thread in the OS until a message arrives (no polling).
