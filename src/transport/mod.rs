@@ -220,13 +220,21 @@ mod tests {
         // We drop and delete the server fd here.
         drop(c);
         std::thread::sleep(Duration::from_millis(500));
-        // The client still has a peer. We conclude that the disconnection is only detected when using send/recv.
+        // Linux only *observes* the disconnect through send/recv: until then
+        // the peer address keeps answering `getpeername`. XNU detaches the
+        // connection as soon as the peer closes its socket, so
+        // `getpeername` fails there (Err(EINVAL)) even though the client's
+        // own receive still reaches the EOF below.
+        #[cfg(target_os = "linux")]
         assert_eq!(client.peer_addr(), Some(addr.clone()));
         // This returns a value of 0, which signals the end of the remote connections.
         let mut buf = [0u8; 12];
         assert_eq!(client.recv(&mut buf), Ok(0));
-        // The client still has a peer. We need to set up a new connection.
-        assert_eq!(client.peer_addr(), Some(addr));
+        #[cfg(target_os = "linux")]
+        {
+            // The client still has a peer. We need to set up a new connection.
+            assert_eq!(client.peer_addr(), Some(addr));
+        }
     }
 
     #[test]

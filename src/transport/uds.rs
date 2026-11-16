@@ -81,6 +81,44 @@ fn receive_timeout_timeval(timeout: Option<Duration>) -> TimeVal {
     TimeVal::microseconds(micros)
 }
 
+/// Queued (partially unread) bytes on the socket, via `FIONREAD`.
+#[cfg(not(target_os = "linux"))]
+fn queued_bytes(fd: nix::libc::c_int) -> Result<usize, Errno> {
+    let mut queued: nix::libc::c_int = 0;
+    // SAFETY: `FIONREAD` writes one `c_int` into the passed pointer.
+    let ret = unsafe { nix::libc::ioctl(fd, nix::libc::FIONREAD, &mut queued) };
+    if ret < 0 {
+        return Err(Errno::last());
+    }
+    Ok(usize::try_from(queued).unwrap_or(0))
+}
+
+#[cfg(not(target_os = "linux"))]
+impl UnixDatagram {
+    /// Consumes exactly `remaining` unread bytes (or fewer if the queue runs
+    /// dry) with non-blocking receives, so that an oversized message is
+    /// abandoned atomically like on the SEQPACKET transport.
+    fn consume_queued_bytes(&self, remaining: usize) {
+        let mut scratch = [0u8; 512];
+        let mut consumed = 0usize;
+        while consumed < remaining {
+            let mut iov = [IoSliceMut::new(&mut scratch)];
+            let Ok(res) = socket::recvmsg::<()>(
+                self.socket.as_raw_fd(),
+                &mut iov,
+                None,
+                MsgFlags::MSG_DONTWAIT,
+            ) else {
+                return;
+            };
+            if res.bytes == 0 {
+                return;
+            }
+            consumed += res.bytes;
+        }
+    }
+}
+
 fn create_unix_socket() -> Result<OwnedFd, TransportError> {
     Ok(socket::socket(
         AddressFamily::Unix,
@@ -272,7 +310,19 @@ impl TransportConnection for UnixDatagram {
         }
         let _guard =
             BlockingModeGuard::for_blocking(self.socket.as_raw_fd(), self.nonblocking_at_rest)?;
-        self.set_receive_timeout(timeout)?;
+        // An unbounded wait sends `SO_RCVTIMEO = 0` — only needed to *clear*
+        // a timeout left by an earlier bounded receive. macOS/XNU quirk: a
+        // socket whose peer connection was detached (peer closed without any
+        // completion of a transfer) rejects even that harmless option write
+        // with `EINVAL`. The immediately following receive finds the EOF in
+        // that state — there is no waiting left to configure — so tolerate
+        // the `EINVAL` instead of masking the disconnect behind an error.
+        self.set_receive_timeout(timeout).or_else(|err| {
+            if err == Errno::EINVAL && !cfg!(target_os = "linux") {
+                return Ok(());
+            }
+            Err(err)
+        })?;
         // `SO_RCVTIMEO` restarts with every syscall, so a signal-interrupted
         // receive re-arms the remaining time to still honor the full deadline.
         let deadline = timeout.map(|timeout| Instant::now() + timeout);
@@ -320,16 +370,61 @@ impl UnixDatagram {
 
         match res {
             Ok(res) => {
+                // Truncation semantics per transport:
+                //
+                // Linux speaks `SOCK_SEQPACKET`, where messages are atomic.
+                // Linux honors `MSG_TRUNC` in the *input* flags by returning
+                // the full datagram size and marking `msg_flags` with
+                // `MSG_TRUNC`; a truncated datagram's remainder is discarded
+                // by the kernel. That is the `ExternalBufferToSmall`
+                // contract below: the oversized message is abandoned
+                // atomically.
+                //
+                // macOS speaks `SOCK_STREAM` (XNU has no AF_UNIX
+                // SOCK_SEQPACKET). There `msg_flags` merely *echoes the
+                // input flags* and never reports truncation as an outcome
+                // (verified: a truncated receive reports the echoed flags
+                // only), so `MSG_TRUNC` cannot be tested here: since we pass
+                // it, it would mark *every* receive as truncated and spin
+                // every retry loop forever. Instead truncation is derived
+                // from the byte count ("buffer fully filled") plus
+                // `FIONREAD` ("and more is still queued"); the queued
+                // remainder is consumed via follow-up receives to keep the
+                // message-atomicity contract of `ExternalBufferToSmall`.
+                #[cfg(target_os = "linux")]
                 if res.flags.contains(MsgFlags::MSG_TRUNC) {
-                    Err(ReceiveError::ExternalBufferToSmall((
+                    return Err(ReceiveError::ExternalBufferToSmall((
                         recv_buffer_len,
                         res.bytes,
-                    )))
-                } else {
-                    Ok(res.bytes)
+                    )));
                 }
+                #[cfg(not(target_os = "linux"))]
+                if res.bytes == recv_buffer_len
+                    && let Ok(queued) = queued_bytes(self.socket.as_raw_fd())
+                    && queued > 0
+                {
+                    // The reported full size is the received prefix plus
+                    // what the kernel had queued; several queued messages
+                    // cannot be told apart on the stream transport.
+                    self.consume_queued_bytes(queued);
+                    return Err(ReceiveError::ExternalBufferToSmall((
+                        recv_buffer_len,
+                        res.bytes + queued,
+                    )));
+                }
+                Ok(res.bytes)
             }
             Err(nix::errno::Errno::EAGAIN) => Err(ReceiveError::NoMessageAvailable),
+            // macOS quirk: XNU detaches a Unix stream socket's connection as
+            // soon as the peer closes its socket. If nothing was ever queued
+            // on the connection, a receive then fails with `EINVAL` instead
+            // of reporting the traditional 0-byte EOF — the identical state
+            // that Linux reports as EOF (verified: once data has flowed, the
+            // receives report `0` bytes as usual). Map `EINVAL` to the
+            // library's EOF semantics so the receiving side detects the
+            // disconnect like on Linux.
+            #[cfg(not(target_os = "linux"))]
+            Err(nix::errno::Errno::EINVAL) => Ok(0),
             Err(err) => Err(err.into()),
         }
     }
