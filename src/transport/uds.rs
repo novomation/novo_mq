@@ -349,7 +349,7 @@ impl UnixDatagram {
 mod tests {
     use std::{os::fd::AsRawFd, path::Path};
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use nix::sys::socket::SockType;
     use nix::sys::socket::{self, AddressFamily, SockFlag, UnixAddr};
 
