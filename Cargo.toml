@@ -17,13 +17,12 @@ base64 = "0.23"
 heapless = "0.9"
 log = "0.4"
 thiserror = "2.0"
-uuid = { version = "1", features = ["v4"] }
 waitfree-sync = "0.4"
 rtsan-standalone = { version = "0.3.0", optional = true }
 rt_tunex = { version = "0.6.0" }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31", features = ["socket", "fs", "uio"] }
+nix = { version = "0.32", features = ["socket", "fs", "uio"] }
 
 
 [target.'cfg(windows)'.dependencies]
@@ -37,6 +36,7 @@ test-log = "0.2"
 plotly = "0.14"
 simple_logger = "5.2"
 dhat = { version = "0.3.3" }
+uuid = { version = "1", features = ["v4"] }
 
 [features]
 rtsan = ["rtsan-standalone"]
