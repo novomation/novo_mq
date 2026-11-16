@@ -45,6 +45,42 @@ tx.join().unwrap();
 rx.join().unwrap();
 ```
 
+### Blocking receive
+
+A subscriber thread that just consumes can park in the OS instead of looping
+over `try_recv` and sleeping. `recv` blocks until a message arrives (the OS
+wakes the thread), and `recv_with_timeout` bounds the wait and reports
+`ReceiveError::Timeout` when nothing arrived in time. Without a connected
+publisher both methods return `ReceiveError::NotConnectedToPublisher`
+immediately, so use `wait_until_connected` to establish the connection first,
+and back off between attempts (bounded `recv_with_timeout` or a short sleep)
+in a loop that survives disconnects.
+
+```rust
+use novomq::datalayer::Datalayer;
+use std::time::Duration;
+
+let tx = std::thread::spawn(|| {
+    let dl = Datalayer::open("test_domain_blocking").unwrap();
+    let mut pl = dl.publisher("my_topic").unwrap();
+    pl.wait_for_subscribers(1);
+    pl.try_send("my_message".as_bytes()).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+});
+let rx = std::thread::spawn(|| {
+    let dl = Datalayer::open("test_domain_blocking").unwrap();
+    let mut sub = dl.subscriber("my_topic").unwrap();
+    sub.wait_until_connected();
+    let mut buf = [0u8; 500];
+    // The thread sleeps in the OS until a message arrives; the bounded
+    // variant reports Err(ReceiveError::Timeout) when nothing arrives in time.
+    let (len, _) = sub.recv(&mut buf).unwrap();
+    println!("{:?}", String::from_utf8_lossy(&buf[0..len]));
+});
+tx.join().unwrap();
+rx.join().unwrap();
+```
+
 ## License
 
 SPDX-License-Identifier: Apache-2.0 OR MIT

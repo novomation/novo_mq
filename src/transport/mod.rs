@@ -1,3 +1,4 @@
+use std::time::Duration;
 use thiserror::Error;
 #[cfg(target_family = "unix")]
 pub mod uds;
@@ -42,6 +43,8 @@ pub enum ReceiveError {
     InternalBufferToSmall,
     #[error("Your external buffer is too small (buffer_len, received_len): {0:?}")]
     ExternalBufferToSmall((usize, usize)),
+    #[error("No message arrived within the waiting timeout")]
+    Timeout,
 }
 
 #[derive(Error, Debug, PartialEq)]
@@ -70,6 +73,12 @@ pub trait TransportConnection {
     fn peer_addr(&self) -> Option<String>;
     fn send(&self, msg: &[u8]) -> Result<usize, SendError>;
     fn recv(&self, recv_buffer: &mut [u8]) -> Result<usize, ReceiveError>;
+    /// Blocks the calling thread in the OS until a message is received.
+    fn recv_blocking(
+        &self,
+        recv_buffer: &mut [u8],
+        timeout: Option<Duration>,
+    ) -> Result<usize, ReceiveError>;
 }
 
 #[cfg(test)]
@@ -83,7 +92,7 @@ mod tests {
     use std::{
         sync::{Arc, atomic::AtomicBool, mpsc::Receiver},
         thread::JoinHandle,
-        time::Duration,
+        time::{Duration, Instant},
     };
     use test_log::test;
 
@@ -272,6 +281,149 @@ mod tests {
             Err(ReceiveError::NoMessageAvailable)
         );
 
+        ct.cancel();
+        join.join().unwrap();
+    }
+
+    /// The blocking receive parks the thread in the OS: a message sent later
+    /// by another thread wakes it up. The elapsed time proves that the call
+    /// really blocked instead of missing the message.
+    #[test]
+    fn recv_blocking_waits_for_a_message() {
+        let (addr, rx_conn, ct, join) = spawn_server();
+        let client = UnixDatagram::connect(&addr).unwrap();
+        let serv_conn = rx_conn.recv().unwrap();
+
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            assert_eq!(serv_conn.send(b"msg"), Ok(3));
+        });
+
+        let start = Instant::now();
+        let mut buf = [0u8; 12];
+        assert_eq!(client.recv_blocking(&mut buf, None), Ok(3));
+        assert_eq!(&buf[..3], b"msg");
+        assert!(
+            start.elapsed() >= Duration::from_millis(250),
+            "the blocking receive returned too early ({:?}); it must wait until the message arrives",
+            start.elapsed()
+        );
+        sender.join().unwrap();
+        ct.cancel();
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn recv_blocking_times_out() {
+        let (addr, rx_conn, ct, join) = spawn_server();
+        let client = UnixDatagram::connect(&addr).unwrap();
+        let _serv_conn = rx_conn.recv().unwrap();
+
+        let start = Instant::now();
+        let mut buf = [0u8; 12];
+        assert_eq!(
+            client.recv_blocking(&mut buf, Some(Duration::from_millis(100))),
+            Err(ReceiveError::Timeout)
+        );
+        assert!(
+            start.elapsed() >= Duration::from_millis(90),
+            "the receive timeout expired too early ({:?})",
+            start.elapsed()
+        );
+        ct.cancel();
+        join.join().unwrap();
+    }
+
+    /// A zero timeout is an immediate attempt: an empty queue is reported as
+    /// a timeout instead of parking the thread forever (which a naive
+    /// `SO_RCVTIMEO=0` implementation would do).
+    #[test]
+    fn recv_blocking_zero_timeout_is_a_nonblocking_attempt() {
+        let (addr, rx_conn, ct, join) = spawn_server();
+        let client = UnixDatagram::connect(&addr).unwrap();
+        let _serv_conn = rx_conn.recv().unwrap();
+
+        let start = Instant::now();
+        let mut buf = [0u8; 12];
+        assert_eq!(
+            client.recv_blocking(&mut buf, Some(Duration::ZERO)),
+            Err(ReceiveError::Timeout)
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "a zero timeout must not block ({:?})",
+            start.elapsed()
+        );
+        ct.cancel();
+        join.join().unwrap();
+    }
+
+    /// Timeouts below a microsecond behave like zero: `SO_RCVTIMEO` cannot
+    /// represent them (0 µs is configured as *no timeout*), so they use the
+    /// immediate attempt and never park the thread.
+    #[test]
+    fn recv_blocking_sub_microsecond_timeout_is_an_immediate_attempt() {
+        let (addr, rx_conn, ct, join) = spawn_server();
+        let client = UnixDatagram::connect(&addr).unwrap();
+        let _serv_conn = rx_conn.recv().unwrap();
+
+        let start = Instant::now();
+        let mut buf = [0u8; 12];
+        assert_eq!(
+            client.recv_blocking(&mut buf, Some(Duration::from_nanos(500))),
+            Err(ReceiveError::Timeout)
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "a sub-microsecond timeout must not block ({:?})",
+            start.elapsed()
+        );
+        ct.cancel();
+        join.join().unwrap();
+    }
+
+    /// A disconnect during the blocking receive wakes the thread up with the
+    /// traditional end-of-file return value of 0.
+    #[test]
+    fn recv_blocking_returns_eof_when_peer_closes() {
+        let (addr, rx_conn, ct, join) = spawn_server();
+        let client = UnixDatagram::connect(&addr).unwrap();
+
+        drop(rx_conn.recv().unwrap());
+
+        let mut buf = [0u8; 12];
+        assert_eq!(client.recv_blocking(&mut buf, None), Ok(0));
+        ct.cancel();
+        join.join().unwrap();
+    }
+
+    /// Accepted sockets are non-blocking at rest: their blocking receive
+    /// temporarily clears the non-blocking flag and must restore it
+    /// afterwards, so a subsequent non-blocking receive does not park in the
+    /// kernel.
+    #[test]
+    fn recv_blocking_on_accepted_socket_restores_nonblocking() {
+        let (addr, rx_conn, ct, join) = spawn_server();
+        let client = UnixDatagram::connect(&addr).unwrap();
+        let serv_conn = rx_conn.recv().unwrap();
+
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            assert_eq!(client.send(b"msg"), Ok(3));
+            // Keep the connection open for the non-blocking check below.
+            std::thread::sleep(Duration::from_millis(500));
+        });
+
+        let mut buf = [0u8; 12];
+        assert_eq!(serv_conn.recv_blocking(&mut buf, None), Ok(3));
+        assert_eq!(&buf[..3], b"msg");
+        // The non-blocking receive on the (again) non-blocking socket must
+        // report "no message" instead of parking forever:
+        assert_eq!(
+            serv_conn.recv(&mut buf),
+            Err(ReceiveError::NoMessageAvailable)
+        );
+        sender.join().unwrap();
         ct.cancel();
         join.join().unwrap();
     }

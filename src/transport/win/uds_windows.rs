@@ -10,13 +10,14 @@ use std::{
     ffi::{CStr, CString},
     path::Path,
     str::FromStr,
+    time::{Duration, Instant},
 };
 use windows::{
     Win32::Networking::WinSock::{
-        ADDRESS_FAMILY, AF_UNIX, FD_SET, FIONBIO, SEND_RECV_FLAGS, SOCK_STREAM, SOCKADDR,
-        SOCKADDR_UN, SOCKET, SOCKET_ERROR, WSADATA, WSAGetLastError, WSAStartup, accept, bind,
-        closesocket, connect, getpeername, getsockname, ioctlsocket, listen, recv, select, send,
-        socket,
+        ADDRESS_FAMILY, AF_UNIX, FIONBIO, SEND_RECV_FLAGS, SO_RCVTIMEO, SOCK_STREAM, SOCKADDR,
+        SOCKADDR_UN, SOCKET, SOCKET_ERROR, SOL_SOCKET, WSADATA, WSAGetLastError, WSAStartup,
+        accept, bind, closesocket, connect, getpeername, getsockname, ioctlsocket, listen, recv,
+        send, setsockopt, socket,
     },
     core::HRESULT,
 };
@@ -41,7 +42,9 @@ fn create_socket() -> Result<SOCKET, WindowsSocketError> {
 
     let fd =
         unsafe { socket(AF_UNIX as i32, SOCK_STREAM, 0) }.map_err(WindowsSocketError::Windows)?;
-    set_nonblocking(fd, true)?;
+    // Sockets are blocking at rest: the blocking receive parks the calling
+    // thread in the OS. The non-blocking `recv` and `send` switch the mode for
+    // the duration of the call (Winsock has no per-call flags).
     Ok(fd)
 }
 fn set_nonblocking(sock: SOCKET, nonblocking: bool) -> Result<(), WindowsSocketError> {
@@ -49,6 +52,69 @@ fn set_nonblocking(sock: SOCKET, nonblocking: bool) -> Result<(), WindowsSocketE
 
     let ret = unsafe { ioctlsocket(sock, FIONBIO, &mut mode) };
     return_to_result(ret)
+}
+
+fn last_winsock_error() -> WindowsSocketError {
+    WindowsSocketError::WinsockError(WinsockError::try_from(unsafe { WSAGetLastError() }).unwrap())
+}
+
+/// Builds the `SO_RCVTIMEO` value in milliseconds. Important: on Winsock a
+/// timeout of `0` means *no timeout* (infinite), so a nonzero duration is
+/// rounded up to at least one millisecond.
+fn receive_timeout_ms(timeout: Duration) -> u32 {
+    timeout.as_millis().try_into().unwrap_or(u32::MAX).max(1)
+}
+
+fn set_receive_timeout(
+    socket: SOCKET,
+    timeout: Option<Duration>,
+) -> Result<(), WindowsSocketError> {
+    // `None` (unbounded wait) sets the OS default: no receive timeout.
+    let ms = timeout.map(receive_timeout_ms).unwrap_or(0);
+    let ret = unsafe {
+        setsockopt(
+            socket,
+            SOL_SOCKET,
+            SO_RCVTIMEO,
+            Some(ms.to_ne_bytes().as_slice()),
+        )
+    };
+    return_to_result(ret)
+}
+
+/// Temporarily changes a socket's blocking mode and restores the handle's
+/// at-rest mode on drop. Winsock exposes no way to query `FIONBIO`, so the
+/// at-rest mode is recorded on `UnixDatagram`.
+struct SocketModeGuard {
+    socket: SOCKET,
+    at_rest_nonblocking: bool,
+    toggled: bool,
+}
+impl SocketModeGuard {
+    fn enter(
+        socket: SOCKET,
+        target_nonblocking: bool,
+        at_rest_nonblocking: bool,
+    ) -> Result<Self, WindowsSocketError> {
+        let toggled = target_nonblocking != at_rest_nonblocking;
+        if toggled {
+            set_nonblocking(socket, target_nonblocking)?;
+        }
+        Ok(Self {
+            socket,
+            at_rest_nonblocking,
+            toggled,
+        })
+    }
+}
+impl Drop for SocketModeGuard {
+    fn drop(&mut self) {
+        if self.toggled
+            && let Err(err) = set_nonblocking(self.socket, self.at_rest_nonblocking)
+        {
+            log::error!("Could not restore socket blocking mode: {err}");
+        }
+    }
 }
 fn sockaddr_un_new(addr: &str) -> Result<SOCKADDR_UN, WindowsSocketError> {
     let mut unix_addr = SOCKADDR_UN {
@@ -183,6 +249,9 @@ impl UnixDatagramListener {
     pub fn bind(addr: &str) -> Result<Self, TransportError> {
         prepare_bind_path(addr)?;
         let fd = create_socket()?;
+        // The listener must stay non-blocking: the management thread polls
+        // `accept` against a cancelation token.
+        set_nonblocking(fd, true)?;
         let unix_addr = sockaddr_un_new(addr)?;
 
         let ret = unsafe {
@@ -218,8 +287,13 @@ impl TransportListener<UnixDatagram> for UnixDatagramListener {
                 TransportError::Os(WindowsSocketError::Windows(err))
             }
         })?;
+        // The accepted socket carries the publisher's traffic: keep it
+        // non-blocking so that `send` never parks the publishing thread. Set
+        // explicitly instead of relying on the listener-mode inheritance.
+        set_nonblocking(socket, true).map_err(TransportError::Os)?;
         Ok(UnixDatagram {
             socket: OwnedSocket(socket),
+            nonblocking_at_rest: true,
         })
     }
 
@@ -231,6 +305,12 @@ impl TransportListener<UnixDatagram> for UnixDatagramListener {
 #[derive(Debug)]
 pub struct UnixDatagram {
     socket: OwnedSocket,
+    /// Blocking mode this handle is in between calls. Connected sockets are
+    /// created blocking (the blocking receive parks the thread in the OS);
+    /// accepted sockets are non-blocking because the publisher's send must
+    /// never wait for a slow subscriber. Winsock has no way to query the
+    /// mode, so the temporary switches restore to this recorded value.
+    nonblocking_at_rest: bool,
 }
 impl Drop for UnixDatagram {
     // Intentionally empty: a `UnixDatagram` is never bound. For a `connect`ed
@@ -244,6 +324,9 @@ impl UnixDatagram {
         let fd = create_socket()?;
         let unix_addr = sockaddr_un_new(addr)?;
 
+        // The socket is blocking: the connect completes synchronously, either
+        // connected, refused because there is no publisher for the topic, or
+        // a real error.
         let ret = unsafe {
             connect(
                 fd,
@@ -252,16 +335,7 @@ impl UnixDatagram {
             )
         };
         match return_to_result(ret) {
-            // A non-blocking connect on Windows can complete synchronously
-            // as soon as the listener is ready. That is a successful
-            // connection, not an error: the select below returns
-            // immediately for an already established socket. Treating this
-            // case as an error made the subscriber management thread retry
-            // forever and a returning subscriber never connected.
-            Ok(_) => {}
-            Err(WindowsSocketError::WinsockError(WinsockError::Wouldblock)) => {
-                // Do nothing here. We wait with select
-            }
+            Ok(_) => (),
             Err(WindowsSocketError::WinsockError(WinsockError::Connrefused)) => {
                 return Err(TransportError::PeerDoesNotExist);
             }
@@ -269,15 +343,10 @@ impl UnixDatagram {
                 return Err(TransportError::Os(err));
             }
         }
-        let mut writefds = FD_SET {
-            fd_count: 1,
-            fd_array: [fd; 64],
-        };
-
-        unsafe { select(0, None, Some(&mut writefds), None, None) };
 
         let ud = UnixDatagram {
             socket: OwnedSocket(fd),
+            nonblocking_at_rest: false,
         };
         log::info!("connect: Now connected to {:?}", ud.peer_addr());
         Ok(ud)
@@ -291,6 +360,12 @@ impl TransportConnection for UnixDatagram {
         peer_addr(self.socket.0)
     }
     fn send(&self, msg: &[u8]) -> Result<usize, SendError> {
+        // The publisher's send must never block on a slow subscriber. Winsock
+        // has no per-call non-blocking flag: switch a socket that is blocking
+        // at rest to non-blocking for this call (accepted sockets are already
+        // non-blocking at rest).
+        let _mode = SocketModeGuard::enter(self.socket.0, true, self.nonblocking_at_rest)
+            .map_err(SendError::from)?;
         let ret = unsafe {
             send(
                 self.socket.0,
@@ -333,6 +408,11 @@ impl TransportConnection for UnixDatagram {
     }
 
     fn recv(&self, recv_buffer: &mut [u8]) -> Result<usize, ReceiveError> {
+        // Winsock has no per-call non-blocking flag: switch a socket that is
+        // blocking at rest to non-blocking for this call and restore the
+        // at-rest mode afterwards (also on the error paths).
+        let _mode = SocketModeGuard::enter(self.socket.0, true, self.nonblocking_at_rest)
+            .map_err(ReceiveError::from)?;
         let mut len = [0u8; 2];
         let ret = unsafe { recv(self.socket.0, &mut len, SEND_RECV_FLAGS(0)) };
         match return_to_result(ret) {
@@ -365,6 +445,12 @@ impl TransportConnection for UnixDatagram {
                 Err(err) => return Err(ReceiveError::OsError(err)),
             }
             debug!("recv buf={:?} ret={ret}", &recv_buffer[0..ret as usize]);
+            // EOF in the middle of the (already size-prefixed) message: the
+            // connection is gone. Report it instead of spinning in the drain
+            // loop, which would never see its remaining bytes.
+            if ret == 0 {
+                return Ok(0);
+            }
             if ret < len as i32 {
                 // clear pipe be drop bytes
                 let mut buf = [0u8; 32];
@@ -388,6 +474,11 @@ impl TransportConnection for UnixDatagram {
                         }
                         Err(err) => return Err(ReceiveError::OsError(err)),
                     }
+                    // EOF while draining an oversized message: connection
+                    // gone, report it instead of spinning forever.
+                    if ret2 == 0 {
+                        return Ok(0);
+                    }
                     len_left = len_left.saturating_sub(ret2);
                 }
 
@@ -399,5 +490,142 @@ impl TransportConnection for UnixDatagram {
 
             return Ok(ret as usize);
         }
+    }
+
+    fn recv_blocking(
+        &self,
+        recv_buffer: &mut [u8],
+        timeout: Option<Duration>,
+    ) -> Result<usize, ReceiveError> {
+        // Winsock honors timeouts at millisecond granularity (0 ms means no
+        // timeout, shorter durations are floored to 1 ms). A timeout below
+        // one microsecond is an immediate attempt instead, so an empty queue
+        // reports a timeout and the caller's budget is essentially kept.
+        if timeout.is_some_and(|timeout| timeout < Duration::from_micros(1)) {
+            return match self.recv(recv_buffer) {
+                Err(ReceiveError::NoMessageAvailable) => Err(ReceiveError::Timeout),
+                other => other,
+            };
+        }
+        // Blocking mode: Winsock parks the calling thread until data is
+        // available, the peer disconnects, the receive timeout expires or the
+        // call is interrupted.
+        let _mode = SocketModeGuard::enter(self.socket.0, false, self.nonblocking_at_rest)
+            .map_err(ReceiveError::from)?;
+        set_receive_timeout(self.socket.0, timeout).map_err(ReceiveError::from)?;
+        // `SO_RCVTIMEO` restarts with every call, so an interrupted receive
+        // re-arms the remaining time to still honor the full deadline.
+        let deadline = timeout.map(|timeout| Instant::now() + timeout);
+
+        // The message framing is a little-endian u16 length prefix.
+        let mut prefix = [0u8; 2];
+        let mut prefix_read = 0usize;
+        while prefix_read < prefix.len() {
+            let ret = unsafe {
+                recv(
+                    self.socket.0,
+                    &mut prefix[prefix_read..],
+                    SEND_RECV_FLAGS(0),
+                )
+            };
+            if ret == SOCKET_ERROR {
+                match last_winsock_error() {
+                    // In blocking mode the timeout expiry is
+                    // `WSAETIMEDOUT`; a spurious `WSAEWOULDBLOCK` (not
+                    // legitimate in blocking mode) means the same thing.
+                    WindowsSocketError::WinsockError(
+                        WinsockError::Timedout | WinsockError::Wouldblock,
+                    ) => return Err(ReceiveError::Timeout),
+                    WindowsSocketError::WinsockError(WinsockError::Intr) => {
+                        if let Some(deadline) = deadline {
+                            let remaining = deadline.saturating_duration_since(Instant::now());
+                            if remaining.is_zero() {
+                                return Err(ReceiveError::Timeout);
+                            }
+                            set_receive_timeout(self.socket.0, Some(remaining))
+                                .map_err(ReceiveError::from)?;
+                        }
+                    }
+                    err => return Err(ReceiveError::OsError(err)),
+                }
+            } else if ret == 0 {
+                // The peer performed an orderly shutdown: connection ended.
+                return Ok(0);
+            } else {
+                prefix_read += ret as usize;
+            }
+        }
+        let expected_len = u16::from_le_bytes(prefix) as usize;
+        if expected_len == 0 {
+            // Sending zero bytes is not allowed (`SendError::ZeroBytes`): a
+            // zero length prefix can only stem from a broken connection.
+            return Ok(0);
+        }
+        debug!("recv_blocking len={expected_len}");
+        // Once the length prefix is read the payload phase runs without a
+        // timeout: a mid-message WSAETIMEDOUT would leave the length-prefixed
+        // stream desynchronized. If the peer dies instead, the receive
+        // reports EOF.
+        set_receive_timeout(self.socket.0, None).map_err(ReceiveError::from)?;
+        Self::receive_blocking_payload(self.socket.0, recv_buffer, expected_len)
+    }
+}
+
+impl UnixDatagram {
+    /// Reads the payload after the length prefix was received, blocking in
+    /// the OS. Returns EOF (0) if the peer disconnects mid-message, which
+    /// makes the subscriber drop and replace the connection instead of
+    /// desynchronizing the framing.
+    fn receive_blocking_payload(
+        socket: SOCKET,
+        recv_buffer: &mut [u8],
+        expected_len: usize,
+    ) -> Result<usize, ReceiveError> {
+        let mut received = 0usize;
+        let len_min = expected_len.min(recv_buffer.len());
+        while received < len_min {
+            let ret = unsafe {
+                recv(
+                    socket,
+                    &mut recv_buffer[received..len_min],
+                    SEND_RECV_FLAGS(0),
+                )
+            };
+            if ret == SOCKET_ERROR {
+                match last_winsock_error() {
+                    WindowsSocketError::WinsockError(WinsockError::Intr) => continue,
+                    err => return Err(ReceiveError::OsError(err)),
+                }
+            } else if ret == 0 {
+                return Ok(0);
+            } else {
+                received += ret as usize;
+            }
+        }
+        if len_min < expected_len {
+            // The message does not fit: read the rest into a scratch buffer
+            // and report the too-small external buffer like the non-blocking
+            // receive does.
+            let mut scratch = [0u8; 32];
+            let mut left = expected_len - len_min;
+            while left > 0 {
+                let chunk = left.min(scratch.len());
+                let ret = unsafe { recv(socket, &mut scratch[..chunk], SEND_RECV_FLAGS(0)) };
+                if ret == SOCKET_ERROR {
+                    match last_winsock_error() {
+                        WindowsSocketError::WinsockError(WinsockError::Intr) => continue,
+                        err => return Err(ReceiveError::OsError(err)),
+                    }
+                } else if ret == 0 {
+                    return Ok(0);
+                }
+                left = left.saturating_sub(ret as usize);
+            }
+            return Err(ReceiveError::ExternalBufferToSmall((
+                recv_buffer.len(),
+                expected_len,
+            )));
+        }
+        Ok(len_min)
     }
 }

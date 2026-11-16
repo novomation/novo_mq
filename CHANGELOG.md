@@ -4,9 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+### Added
+
+* Blocking receive for subscribers: `Subscriber::recv()` parks the calling thread in the OS until a message arrives (no polling).
+* 🚨 New `ReceiveError::Timeout` variant, reported by the bounded blocking receive when no message arrives in time.
+
 ### Fixed
 
 * Accepted publisher connections are now non-blocking on Linux
+* Windows: a peer disconnect in the middle of receiving a message now ends a non-blocking receive with the EOF return instead of spinning forever.
 
 ## [0.5.1] - 2026-10-16
 

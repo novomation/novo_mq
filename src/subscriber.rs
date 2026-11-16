@@ -78,33 +78,85 @@ impl Subscriber {
     // #[rtsan_standalone::nonblocking]
     #[cfg_attr(feature = "rtsan", rtsan_standalone::nonblocking)]
     pub fn try_recv(&mut self, message: &mut [u8]) -> Result<(usize, usize), ReceiveError> {
+        self.pick_up_new_socket();
+        let Some(socket) = self.socket.as_ref() else {
+            return Err(ReceiveError::NotConnectedToPublisher);
+        };
+        let bytes = socket.recv(message)?;
+        self.handle_received(bytes, message.len())
+    }
+
+    /// Blocks the calling thread in the OS until a message arrives on this
+    /// topic. The thread does not poll: the kernel parks it until a message
+    /// arrives or the publisher disconnects, which reports
+    /// [`ReceiveError::DisconnectDetected`].
+    ///
+    /// While no publisher is connected, this returns
+    /// [`ReceiveError::NotConnectedToPublisher`] instead of waiting — a
+    /// consumer typically calls [`Subscriber::wait_until_connected`] first.
+    /// For a loop that consumes across a disconnect, back off between
+    /// attempts (a bounded [`Subscriber::recv_with_timeout`] or a short
+    /// sleep): a plain `loop { recv() }` spins on `NotConnectedToPublisher`
+    /// until the management thread reconnects.
+    pub fn recv(&mut self, message: &mut [u8]) -> Result<(usize, usize), ReceiveError> {
+        self.recv_blocking(message, None)
+    }
+
+    /// Blocks like [`Subscriber::recv`], but reports
+    /// [`ReceiveError::Timeout`] when no message arrived within `timeout`.
+    /// A `timeout` of zero performs an immediate attempt.
+    pub fn recv_with_timeout(
+        &mut self,
+        message: &mut [u8],
+        timeout: Duration,
+    ) -> Result<(usize, usize), ReceiveError> {
+        self.recv_blocking(message, Some(timeout))
+    }
+
+    fn recv_blocking(
+        &mut self,
+        message: &mut [u8],
+        timeout: Option<Duration>,
+    ) -> Result<(usize, usize), ReceiveError> {
+        self.pick_up_new_socket();
+        let Some(socket) = self.socket.as_ref() else {
+            return Err(ReceiveError::NotConnectedToPublisher);
+        };
+        let bytes = socket.recv_blocking(message, timeout)?;
+        self.handle_received(bytes, message.len())
+    }
+
+    /// Connects a new socket if the management thread handed one over.
+    fn pick_up_new_socket(&mut self) {
         if self.socket.is_none() {
             self.socket = self.rx_new_socket.try_recv().ok();
         }
-        if let Some(socket) = &self.socket {
-            let bytes = socket.recv(message)?;
-            let read_bytes = bytes.min(message.len());
-            // When a stream socket peer has performed an orderly shutdown, the
-            // return value will be 0 (the traditional "end-of-file" return).
-            //
-            // Datagram sockets in various domains (e.g., the UNIX and Internet
-            // domains) permit zero-size datagrams.  When such a datagram is
-            // received, the return value is 0.
-            //
-            // The value 0 may also be returned if the requested number of bytes
-            // to receive from a stream socket was 0.
-            // Here we hope thaht we only catch the first case. So sending zero must be avoided.
-            if bytes == 0 {
-                self.has_connection.store(false, Ordering::Release);
-                // We drop the existing connection
-                let _ = self.socket.take();
-                Err(ReceiveError::DisconnectDetected)
-            } else {
-                Ok((read_bytes, bytes))
-            }
-        } else {
-            Err(ReceiveError::NotConnectedToPublisher)
+    }
+
+    /// Reports a received message and handles the disconnect case.
+    ///
+    /// When a stream socket peer has performed an orderly shutdown, the
+    /// return value will be 0 (the traditional "end-of-file" return).
+    ///
+    /// Datagram sockets in various domains (e.g., the UNIX and Internet
+    /// domains) permit zero-size datagrams. When such a datagram is received,
+    /// the return value is 0. The value 0 may also be returned if the
+    /// requested number of bytes to receive from a stream socket was 0. Here
+    /// we hope that we only catch the first case, so sending zero must be
+    /// avoided.
+    fn handle_received(
+        &mut self,
+        bytes: usize,
+        message_len: usize,
+    ) -> Result<(usize, usize), ReceiveError> {
+        if bytes == 0 {
+            self.has_connection.store(false, Ordering::Release);
+            // We drop the existing connection: the management thread
+            // establishes a new one.
+            let _ = self.socket.take();
+            return Err(ReceiveError::DisconnectDetected);
         }
+        Ok((bytes.min(message_len), bytes))
     }
     pub fn has_connection(&self) -> bool {
         self.has_connection.load(Ordering::Relaxed)
@@ -148,6 +200,7 @@ impl Debug for Subscriber {
 #[cfg(test)]
 mod test {
     use crate::publisher::Publisher;
+    use std::time::Instant;
 
     use super::*;
 
@@ -176,5 +229,107 @@ mod test {
         publ.try_send("hans".as_bytes()).unwrap();
         let (len, _) = sub.try_recv(&mut buf).unwrap();
         println!("{:?}", String::from_utf8_lossy(&buf[0..len]));
+    }
+
+    /// The blocking receive parks the thread in the OS until the publisher
+    /// sends in a parallel thread.
+    #[test]
+    fn blocking_recv_receives_message() {
+        let mut sub = Subscriber::new("", "blocking_recv").unwrap();
+        let mut publ = Publisher::new("", "blocking_recv").unwrap();
+        publ.wait_for_subscribers(1);
+
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            publ.try_send("hans".as_bytes()).unwrap();
+        });
+
+        let start = Instant::now();
+        let mut buf = [0u8; 1000];
+        let (len, _) = sub.recv(&mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&buf[0..len]).to_string(),
+            "hans".to_string()
+        );
+        assert!(
+            start.elapsed() >= Duration::from_millis(150),
+            "the blocking receive returned too early ({:?})",
+            start.elapsed()
+        );
+        sender.join().unwrap();
+    }
+
+    /// Without a publisher there is nothing to wait on: the bounded receive
+    /// reports `NotConnectedToPublisher` immediately.
+    #[test]
+    fn recv_without_publisher_is_immediate() {
+        let mut sub = Subscriber::new("", "no_publisher").unwrap();
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            sub.recv_with_timeout(&mut buf, Duration::from_millis(5)),
+            Err(ReceiveError::NotConnectedToPublisher)
+        );
+    }
+
+    #[test]
+    fn recv_with_timeout_returns_timeout_on_silence() {
+        let mut sub = Subscriber::new("", "silent_topic").unwrap();
+        let publ = Publisher::new("", "silent_topic").unwrap();
+        publ.wait_for_subscribers(1);
+
+        let start = Instant::now();
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            sub.recv_with_timeout(&mut buf, Duration::from_millis(100)),
+            Err(ReceiveError::Timeout)
+        );
+        assert!(
+            start.elapsed() >= Duration::from_millis(90),
+            "the receive timeout expired too early ({:?})",
+            start.elapsed()
+        );
+    }
+
+    /// A sub-microsecond timeout is an immediate attempt, even though the
+    /// publisher is connected: on Unix `SO_RCVTIMEO` would otherwise be
+    /// configured with zero microseconds, which means an unbounded wait.
+    #[test]
+    fn recv_with_timeout_sub_microsecond_is_immediate() {
+        let mut sub = Subscriber::new("", "submicro_topic").unwrap();
+        let publ = Publisher::new("", "submicro_topic").unwrap();
+        publ.wait_for_subscribers(1);
+
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            sub.recv_with_timeout(&mut buf, Duration::from_nanos(500)),
+            Err(ReceiveError::Timeout)
+        );
+    }
+
+    /// A disconnect during the blocking receive wakes the thread up with
+    /// `DisconnectDetected`. A new publisher reconnects and the next
+    /// blocking receive delivers again.
+    #[test]
+    fn blocking_recv_sees_disconnect_and_recovers() {
+        let mut sub = Subscriber::new("", "flaky_topic").unwrap();
+        let publ = Publisher::new("", "flaky_topic").unwrap();
+        publ.wait_for_subscribers(1);
+
+        drop(publ);
+        let mut buf = [0u8; 8];
+        assert_eq!(sub.recv(&mut buf), Err(ReceiveError::DisconnectDetected));
+
+        let mut publ = Publisher::new("", "flaky_topic").unwrap();
+        publ.wait_for_subscribers(1);
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            publ.try_send("again".as_bytes()).unwrap();
+        });
+        let (len, _) = sub.recv(&mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&buf[0..len]).to_string(),
+            "again".to_string()
+        );
+        sender.join().unwrap();
     }
 }

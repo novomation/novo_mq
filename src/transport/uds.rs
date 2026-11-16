@@ -3,13 +3,19 @@ use crate::{
     transport::{MAX_CONNECTIONS, TransportConnection, TransportError, TransportListener},
 };
 use nix::{
-    errno::Errno::{EAGAIN, EALREADY, ECONNREFUSED, ECONNRESET, EINPROGRESS, ENOENT, EPIPE},
-    sys::socket::{self, AddressFamily, Backlog, MsgFlags, RecvMsg, SockFlag, SockType, UnixAddr},
+    errno::Errno::{
+        self, EAGAIN, EALREADY, ECONNREFUSED, ECONNRESET, EINPROGRESS, EINTR, ENOENT, EPIPE,
+    },
+    sys::socket::{
+        self, AddressFamily, Backlog, MsgFlags, RecvMsg, SockFlag, SockType, UnixAddr, sockopt,
+    },
     sys::stat::{SFlag, lstat},
+    sys::time::{TimeVal, TimeValLike},
 };
 use std::{
     io::IoSliceMut,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    time::{Duration, Instant},
 };
 
 pub fn set_nonblock(fd: nix::libc::c_int) -> Result<(), nix::errno::Errno> {
@@ -21,6 +27,58 @@ pub fn set_nonblock(fd: nix::libc::c_int) -> Result<(), nix::errno::Errno> {
             _ => Ok(()),
         }
     }
+}
+
+/// Temporarily clears `O_NONBLOCK` so the following receive can block in the
+/// OS. Only sockets that are non-blocking at rest (the accepted publisher
+/// connections) need this; a connected socket is blocking at rest, so the
+/// blocking receive path of a subscriber stays syscall-free.
+struct BlockingModeGuard {
+    fd: nix::libc::c_int,
+    was_nonblocking: bool,
+}
+impl BlockingModeGuard {
+    fn for_blocking(fd: nix::libc::c_int, nonblocking_at_rest: bool) -> Result<Self, Errno> {
+        if !nonblocking_at_rest {
+            return Ok(Self {
+                fd,
+                was_nonblocking: false,
+            });
+        }
+        let saved_flags = unsafe { nix::libc::fcntl(fd, nix::libc::F_GETFL) };
+        if saved_flags < 0 {
+            return Err(Errno::last());
+        }
+        let ret = unsafe {
+            nix::libc::fcntl(fd, nix::libc::F_SETFL, saved_flags & !nix::libc::O_NONBLOCK)
+        };
+        if ret < 0 {
+            return Err(Errno::last());
+        }
+        Ok(Self {
+            fd,
+            was_nonblocking: true,
+        })
+    }
+}
+impl Drop for BlockingModeGuard {
+    fn drop(&mut self) {
+        if self.was_nonblocking
+            && let Err(err) = set_nonblock(self.fd)
+        {
+            log::error!("Could not restore O_NONBLOCK on fd {}: {err}", self.fd);
+        }
+    }
+}
+
+/// Builds the `SO_RCVTIMEO` value for the blocking receive: the given
+/// duration in microseconds, or zero (the OS disables the timeout) for an
+/// unbounded wait.
+fn receive_timeout_timeval(timeout: Option<Duration>) -> TimeVal {
+    let micros = timeout
+        .map(|timeout| i64::try_from(timeout.as_micros()).unwrap_or(i64::MAX))
+        .unwrap_or_default();
+    TimeVal::microseconds(micros)
 }
 
 fn create_unix_socket() -> Result<OwnedFd, TransportError> {
@@ -99,10 +157,15 @@ impl TransportListener<UnixDatagram> for UnixDatagramListener {
         match ret {
             Ok(fd) => {
                 // On Linux `accept()` does not inherit O_NONBLOCK from the
-                // listening socket
+                // listening socket. The accepted socket carries the
+                // publisher's traffic: keep it non-blocking so that
+                // `send` never parks the publishing thread.
                 let socket = unsafe { OwnedFd::from_raw_fd(fd) };
                 set_nonblock(socket.as_raw_fd())?;
-                Ok(UnixDatagram { socket })
+                Ok(UnixDatagram {
+                    socket,
+                    nonblocking_at_rest: true,
+                })
             }
             Err(EAGAIN) => Err(TransportError::WouldBlock),
             Err(err) => Err(TransportError::Os(err)),
@@ -118,6 +181,11 @@ impl TransportListener<UnixDatagram> for UnixDatagramListener {
 #[derive(Debug)]
 pub struct UnixDatagram {
     socket: OwnedFd,
+    /// Blocking mode this handle is in between calls. Connected sockets are
+    /// created blocking (the blocking receive parks the thread in the OS);
+    /// accepted sockets are non-blocking because the publisher's send must
+    /// never wait for a slow subscriber.
+    nonblocking_at_rest: bool,
 }
 impl Drop for UnixDatagram {
     // Intentionally empty: a `UnixDatagram` is never bound. For a `connect`ed
@@ -129,7 +197,9 @@ impl Drop for UnixDatagram {
 impl UnixDatagram {
     pub fn connect(addr: &str) -> Result<Self, TransportError> {
         let fd = create_unix_socket()?;
-        set_nonblock(fd.as_raw_fd())?;
+        // The receive socket is blocking at rest: `recv_blocking` parks the
+        // calling thread in the OS. The non-blocking `recv` and `send` keep
+        // their per-call semantics through `MSG_DONTWAIT`.
         let unix_addr = UnixAddr::new(addr)?;
 
         let ret = socket::connect(fd.as_raw_fd(), &unix_addr);
@@ -139,7 +209,10 @@ impl UnixDatagram {
             Err(err) => return Err(TransportError::Os(err)),
         }
 
-        let ud = UnixDatagram { socket: fd };
+        let ud = UnixDatagram {
+            socket: fd,
+            nonblocking_at_rest: false,
+        };
         log::info!("UnixDatagram now connected to {:?}", ud.peer_addr());
         Ok(ud)
     }
@@ -178,9 +251,64 @@ impl TransportConnection for UnixDatagram {
     }
 
     fn recv(&self, recv_buffer: &mut [u8]) -> Result<usize, super::ReceiveError> {
+        self.recv_message(recv_buffer, MsgFlags::MSG_TRUNC | MsgFlags::MSG_DONTWAIT)
+    }
+
+    fn recv_blocking(
+        &self,
+        recv_buffer: &mut [u8],
+        timeout: Option<Duration>,
+    ) -> Result<usize, super::ReceiveError> {
+        // `SO_RCVTIMEO` cannot honor a timeout below one microsecond: zero
+        // means an unbounded wait and anything else is rounded up to a
+        // scheduler tick. Such a timeout is an immediate attempt instead, so
+        // an empty queue reports a timeout and the caller's budget is never
+        // exceeded (worst case: it misses a message queued in a tick).
+        if timeout.is_some_and(|timeout| timeout < Duration::from_micros(1)) {
+            return match self.recv(recv_buffer) {
+                Err(ReceiveError::NoMessageAvailable) => Err(ReceiveError::Timeout),
+                other => other,
+            };
+        }
+        let _guard =
+            BlockingModeGuard::for_blocking(self.socket.as_raw_fd(), self.nonblocking_at_rest)?;
+        self.set_receive_timeout(timeout)?;
+        // `SO_RCVTIMEO` restarts with every syscall, so a signal-interrupted
+        // receive re-arms the remaining time to still honor the full deadline.
+        let deadline = timeout.map(|timeout| Instant::now() + timeout);
+        loop {
+            match self.recv_message(recv_buffer, MsgFlags::MSG_TRUNC) {
+                // In blocking mode this "EAGAIN" (reported as
+                // NoMessageAvailable, `EWOULDBLOCK` is an alias for it) can
+                // only be produced by the receive timeout expiring. The
+                // unfinished message stays queued for the next receive.
+                Err(ReceiveError::NoMessageAvailable) => return Err(ReceiveError::Timeout),
+                Err(ReceiveError::OsError(EINTR)) => {
+                    if let Some(deadline) = deadline {
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        // Re-arming with (sub)zero remaining would set
+                        // `SO_RCVTIMEO=0`, which means an *unbounded* wait:
+                        // report the expired budget instead.
+                        if remaining < Duration::from_micros(1) {
+                            return Err(ReceiveError::Timeout);
+                        }
+                        self.set_receive_timeout(Some(remaining))?;
+                    }
+                }
+                result => return result,
+            }
+        }
+    }
+}
+
+impl UnixDatagram {
+    /// Core around `recvmsg`, shared by the non-blocking and the blocking
+    /// receive. Maps `EAGAIN` of a non-blocking receive to
+    /// [`ReceiveError::NoMessageAvailable`]; the blocking receive re-maps it
+    /// (in blocking mode `EAGAIN` can only be produced by `SO_RCVTIMEO`).
+    fn recv_message(&self, recv_buffer: &mut [u8], flags: MsgFlags) -> Result<usize, ReceiveError> {
         let recv_buffer_len = recv_buffer.len();
         let mut iov = [IoSliceMut::new(recv_buffer)];
-        let flags = MsgFlags::MSG_TRUNC | MsgFlags::MSG_DONTWAIT;
         let mut cmsg_buffer = [0u8; 1];
 
         let res: Result<RecvMsg<()>, nix::errno::Errno> = socket::recvmsg(
@@ -204,6 +332,16 @@ impl TransportConnection for UnixDatagram {
             Err(nix::errno::Errno::EAGAIN) => Err(ReceiveError::NoMessageAvailable),
             Err(err) => Err(err.into()),
         }
+    }
+
+    /// Sets `SO_RCVTIMEO` for the blocking receive. A timeout of zero
+    /// disables the timeout (unbounded wait).
+    fn set_receive_timeout(&self, timeout: Option<Duration>) -> Result<(), Errno> {
+        socket::setsockopt(
+            &self.socket,
+            sockopt::ReceiveTimeout,
+            &receive_timeout_timeval(timeout),
+        )
     }
 }
 
