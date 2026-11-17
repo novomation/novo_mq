@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+## [0.6.1] - 2026-11-17
+
+### Changed
+
+* Bump deps
+* Clippy
+
 ## [0.6.0] - 2026-11-16
 
 ### Added

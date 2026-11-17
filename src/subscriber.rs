@@ -126,7 +126,6 @@ impl Subscriber {
         }
     }
 
-
     fn handle_received(
         &mut self,
         bytes: usize,
