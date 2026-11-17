@@ -7,7 +7,6 @@ authors = ["Marc Fischer <marc.fischer@novomation.de>"]
 description = "Simple real-time messaging "
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/novomation/novo_mq"
-homepage = "https://github.com/novomation/novo_mq"
 keywords = ["ipc", "linux", "rt", "real-time"]
 categories = ["network-programming"]
 

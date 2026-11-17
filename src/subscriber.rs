@@ -87,17 +87,10 @@ impl Subscriber {
     }
 
     /// Blocks the calling thread in the OS until a message arrives on this
-    /// topic. The thread does not poll: the kernel parks it until a message
-    /// arrives or the publisher disconnects, which reports
-    /// [`ReceiveError::DisconnectDetected`].
+    /// topic.
     ///
     /// While no publisher is connected, this returns
-    /// [`ReceiveError::NotConnectedToPublisher`] instead of waiting — a
-    /// consumer typically calls [`Subscriber::wait_until_connected`] first.
-    /// For a loop that consumes across a disconnect, back off between
-    /// attempts (a bounded [`Subscriber::recv_with_timeout`] or a short
-    /// sleep): a plain `loop { recv() }` spins on `NotConnectedToPublisher`
-    /// until the management thread reconnects.
+    /// [`ReceiveError::NotConnectedToPublisher`].
     pub fn recv(&mut self, message: &mut [u8]) -> Result<(usize, usize), ReceiveError> {
         self.recv_blocking(message, None)
     }
@@ -133,17 +126,7 @@ impl Subscriber {
         }
     }
 
-    /// Reports a received message and handles the disconnect case.
-    ///
-    /// When a stream socket peer has performed an orderly shutdown, the
-    /// return value will be 0 (the traditional "end-of-file" return).
-    ///
-    /// Datagram sockets in various domains (e.g., the UNIX and Internet
-    /// domains) permit zero-size datagrams. When such a datagram is received,
-    /// the return value is 0. The value 0 may also be returned if the
-    /// requested number of bytes to receive from a stream socket was 0. Here
-    /// we hope that we only catch the first case, so sending zero must be
-    /// avoided.
+
     fn handle_received(
         &mut self,
         bytes: usize,
